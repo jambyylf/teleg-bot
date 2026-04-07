@@ -99,12 +99,49 @@ def _base_ydl_opts(url: str = "") -> dict:
     if _is_youtube(url):
         opts["extractor_args"] = {"youtube": {"player_client": ["tv_embedded"]}}
     if _is_tiktok(url):
-        # Браузер TLS fingerprint-ін имитациялайды — IP блокын айналып өтеді
         opts["impersonate"] = ImpersonateTarget("chrome")
+        opts["extractor_args"] = {
+            "tiktok": {"api_hostname": "api16-normal-c-useast1a.tiktokv.com"}
+        }
     if COOKIES_FILE.exists():
         opts["cookiefile"] = str(COOKIES_FILE)
-        logger.info("cookies.txt пайдаланылады")
     return opts
+
+
+def _ydl_download_with_retry(opts: dict, url: str) -> dict:
+    """Алдымен қалыпты жүктейді, сәтсіз болса баламалы параметрлермен қайталайды."""
+    try:
+        return _ydl_download(opts, url)
+    except Exception as first_err:
+        err_str = str(first_err).lower()
+        # Auth/block қатесі болса — cookie немесе басқа параметрлермен retry
+        if any(k in err_str for k in ("blocked", "login", "authentication",
+                                       "registered", "cookies", "private")):
+            retry_opts = dict(opts)
+            # TikTok үшін басқа API hostname-мен қайталайды
+            if "tiktok" in url.lower():
+                for hostname in [
+                    "api19-normal-c-useast1a.tiktokv.com",
+                    "api22-normal-c-useast1a.tiktokv.com",
+                ]:
+                    retry_opts["extractor_args"] = {
+                        "tiktok": {"api_hostname": hostname}
+                    }
+                    try:
+                        return _ydl_download(retry_opts, url)
+                    except Exception:
+                        continue
+            # Instagram үшін cookies olmadan басқа user-agent-пен
+            if "instagram.com" in url.lower():
+                retry_opts["http_headers"] = {
+                    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                                  "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+                }
+                try:
+                    return _ydl_download(retry_opts, url)
+                except Exception:
+                    pass
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -114,8 +151,24 @@ def _base_ydl_opts(url: str = "") -> dict:
 def get_video_info(url: str) -> dict:
     opts = _base_ydl_opts(url)
     opts["skip_download"] = True
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        return ydl.extract_info(url, download=False)
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.extract_info(url, download=False)
+    except Exception as e:
+        err = str(e).lower()
+        if "tiktok" in url.lower() and any(k in err for k in ("blocked", "login")):
+            for hostname in [
+                "api19-normal-c-useast1a.tiktokv.com",
+                "api22-normal-c-useast1a.tiktokv.com",
+            ]:
+                retry = dict(opts)
+                retry["extractor_args"] = {"tiktok": {"api_hostname": hostname}}
+                try:
+                    with yt_dlp.YoutubeDL(retry) as ydl:
+                        return ydl.extract_info(url, download=False)
+                except Exception:
+                    continue
+        raise
 
 
 def get_available_video_qualities(info: dict) -> list[dict]:
@@ -291,7 +344,7 @@ async def download_and_send_audio(query, context, url: str) -> None:
 
     try:
         loop = asyncio.get_event_loop()
-        info = await loop.run_in_executor(None, lambda: _ydl_download(opts, url))
+        info = await loop.run_in_executor(None, lambda: _ydl_download_with_retry(opts, url))
         title = info.get("title") or "audio"
 
         mp3_path = DOWNLOAD_DIR / f"audio_{uid}.mp3"
@@ -347,7 +400,7 @@ async def download_and_send_video(query, context, url: str, height: int | None) 
 
     try:
         loop = asyncio.get_event_loop()
-        info = await loop.run_in_executor(None, lambda: _ydl_download(opts, url))
+        info = await loop.run_in_executor(None, lambda: _ydl_download_with_retry(opts, url))
         title = context.user_data.get("dl_title") or info.get("title") or "video"
 
         mp4_files = list(DOWNLOAD_DIR.glob(f"video_{uid}.mp4"))
