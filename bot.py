@@ -56,6 +56,25 @@ COOKIES_FILE = Path("cookies.txt")
 
 USER_URL_KEY = "dl_url"
 
+# Query параметрлерін алып тастайтын домендер
+CLEAN_URL_DOMAINS = (
+    "threads.net", "threads.com",
+    "instagram.com",
+    "tiktok.com",
+    "vk.com", "vk.ru",
+)
+
+
+def _clean_url(url: str) -> str:
+    """Query параметрлерін алып тастайды және домендерді түзетеді."""
+    from urllib.parse import urlparse, urlunparse
+    # threads.com → threads.net (yt-dlp тек threads.net қолдайды)
+    url = url.replace("www.threads.com", "www.threads.net").replace("threads.com", "threads.net")
+    parsed = urlparse(url)
+    if any(d in parsed.netloc for d in CLEAN_URL_DOMAINS):
+        return urlunparse(parsed._replace(query="", fragment=""))
+    return url
+
 
 # ---------------------------------------------------------------------------
 # FFmpeg жолы
@@ -215,6 +234,28 @@ def get_available_video_qualities(info: dict) -> list[dict]:
 # Handlers
 # ---------------------------------------------------------------------------
 
+async def cmd_setcookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        "🍪 Cookies файлын жіберіңіз:\n\n"
+        "1. Компьютерде Chrome ашыңыз\n"
+        "2. «Get cookies.txt LOCALLY» extension орнатыңыз\n"
+        "3. Instagram немесе Threads-ке кіріңіз\n"
+        "4. Export жасап, cookies.txt файлын осы ботқа жіберіңіз (файл ретінде)"
+    )
+
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    doc = update.message.document
+    if not doc.file_name.endswith(".txt"):
+        return
+    file = await context.bot.get_file(doc.file_id)
+    await file.download_to_drive(str(COOKIES_FILE))
+    await update.message.reply_text(
+        f"✅ cookies.txt сақталды ({doc.file_size // 1024} КБ)\n"
+        "Енді Instagram, Threads, TikTok, Facebook жұмыс істейді!"
+    )
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Сәлем! Видео сілтемесін жіберіңіз.\n\n"
@@ -235,7 +276,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     url = match.group(0)
-    context.user_data[USER_URL_KEY] = url
+    context.user_data[USER_URL_KEY] = _clean_url(url)
 
     keyboard = [[
         InlineKeyboardButton("🎵 Аудио (MP3)", callback_data="type:audio"),
@@ -366,6 +407,9 @@ async def download_and_send_audio(query, context, url: str) -> None:
                     audio=f,
                     title=title[:64],
                     filename=f"{_safe_name(title)}.mp3",
+                    read_timeout=600,
+                    write_timeout=600,
+                    connect_timeout=60,
                 )
         await query.edit_message_text("✅ Аудио жіберілді!")
         mp3_path.unlink(missing_ok=True)
@@ -381,15 +425,22 @@ async def download_and_send_video(query, context, url: str, height: int | None) 
     uid = uuid.uuid4().hex[:8]
     out_template = str(DOWNLOAD_DIR / f"video_{uid}.%(ext)s")
 
-    # H.264 кодекін басымдықта алады — Telegram-да дұрыс ойнайды
+    # H.264 (avc) басымдықта — конвертациясыз Telegram-да ойнайды
     if height:
         fmt = (
-            f"bestvideo[height<={height}][vcodec^=avc]+bestaudio/bestaudio"
-            f"/bestvideo[height<={height}]+bestaudio"
-            f"/best[height<={height}]"
+            f"bestvideo[height<={height}][vcodec^=avc1]+bestaudio[ext=m4a]/"
+            f"bestvideo[height<={height}][vcodec^=avc]+bestaudio[ext=m4a]/"
+            f"bestvideo[height<={height}][vcodec^=avc]+bestaudio/"
+            f"bestvideo[height<={height}]+bestaudio/"
+            f"best[height<={height}]"
         )
     else:
-        fmt = "bestvideo[vcodec^=avc]+bestaudio/bestaudio/bestvideo+bestaudio/best"
+        fmt = (
+            "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/"
+            "bestvideo[vcodec^=avc]+bestaudio[ext=m4a]/"
+            "bestvideo[vcodec^=avc]+bestaudio/"
+            "bestvideo+bestaudio/best"
+        )
 
     opts = _base_ydl_opts(url)
     opts.update({
@@ -418,9 +469,10 @@ async def download_and_send_video(query, context, url: str, height: int | None) 
         )
 
         size_mb = video_path.stat().st_size / (1024 * 1024)
+        vw, vh = _get_video_dimensions(video_path)
         await query.edit_message_text(f"📤 Жіберілуде... ({size_mb:.0f} МБ)")
         if size_mb > 50 and API_ID and API_HASH:
-            await _pyro_send_video(query.message.chat_id, video_path, title, query.message)
+            await _pyro_send_video(query.message.chat_id, video_path, title, query.message, vw, vh)
         else:
             with open(video_path, "rb") as f:
                 await context.bot.send_video(
@@ -429,6 +481,11 @@ async def download_and_send_video(query, context, url: str, height: int | None) 
                     caption=f"🎬 {title[:200]}",
                     filename=f"{_safe_name(title)}.mp4",
                     supports_streaming=True,
+                    width=vw or None,
+                    height=vh or None,
+                    read_timeout=600,
+                    write_timeout=600,
+                    connect_timeout=60,
                 )
         await query.edit_message_text("✅ Видео жіберілді!")
         video_path.unlink(missing_ok=True)
@@ -472,11 +529,6 @@ def _format_error(error: str, url: str = "") -> str:
                 + COOKIES_INSTRUCTION
             )
         return "❌ TikTok бұл контентті жүктеуге рұқсат бермеді."
-    if is_threads and no_cookies:
-        return (
-            "🔐 Threads cookies.txt-сіз жұмыс істемейді.\n\n"
-            + COOKIES_INSTRUCTION
-        )
     if is_vk and no_cookies and ("login" in err or "auth" in err or "private" in err):
         return (
             "🔐 Бұл VK видеосы кіруді қажет етеді.\n\n"
@@ -488,11 +540,6 @@ def _format_error(error: str, url: str = "") -> str:
             + COOKIES_INSTRUCTION
         )
     if "unsupported url" in err or "invalid_post" in err:
-        if is_threads:
-            return (
-                "❌ Threads сілтемесі жарамсыз немесе кіру қажет.\n\n"
-                + COOKIES_INSTRUCTION
-            )
         return "❌ Бұл сайт қолдамайды немесе сілтеме дұрыс емес."
     if "copyright" in err or "removed at the request" in err:
         return "⛔ Бұл видео авторлық құқық иесінің сұрауы бойынша жойылған. Жүктеу мүмкін емес."
@@ -503,7 +550,8 @@ def _format_error(error: str, url: str = "") -> str:
     return f"❌ Қате болды:\n{error[:300]}"
 
 
-async def _pyro_send_video(chat_id: int, path: Path, title: str, progress_msg) -> None:
+async def _pyro_send_video(chat_id: int, path: Path, title: str, progress_msg,
+                           width: int = 0, height: int = 0) -> None:
     """Pyrogram арқылы кез келген өлшемдегі видеоны жібереді (2 ГБ-қа дейін)."""
     async with Client(
         "bot_session",
@@ -521,13 +569,17 @@ async def _pyro_send_video(chat_id: int, path: Path, title: str, progress_msg) -
                 except Exception:
                     pass
 
-        await app.send_video(
+        kwargs = dict(
             chat_id=chat_id,
             video=str(path),
             caption=f"🎬 {title[:1000]}",
             supports_streaming=True,
             progress=progress,
         )
+        if width and height:
+            kwargs["width"] = width
+            kwargs["height"] = height
+        await app.send_video(**kwargs)
 
 
 async def _pyro_send_audio(chat_id: int, path: Path, title: str, progress_msg) -> None:
@@ -556,15 +608,31 @@ async def _pyro_send_audio(chat_id: int, path: Path, title: str, progress_msg) -
         )
 
 
+def _get_video_dimensions(path: Path) -> tuple[int, int]:
+    """FFprobe арқылы видео ені мен биіктігін қайтарады."""
+    ffprobe = Path(FFMPEG_DIR) / "ffprobe.exe" if FFMPEG_DIR else "ffprobe"
+    r = subprocess.run(
+        [str(ffprobe), "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height",
+         "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True
+    )
+    try:
+        w, h = r.stdout.strip().split(",")
+        return int(w), int(h)
+    except Exception:
+        return 0, 0
+
+
 def _convert_for_telegram(src: Path, uid: str) -> Path:
     """
-    Видеоны Telegram-ға үйлесімді H.264+AAC MP4-ке конвертациялайды.
-    Егер бұрын H.264 болса — тек faststart қосады (жылдам).
+    Telegram үшін H.264+AAC MP4-ке дайындайды.
+    H.264 болса — faststart ғана (секундтар). Басқа кодек болса — ultrafast encode.
     """
     ffmpeg = Path(FFMPEG_DIR) / "ffmpeg.exe" if FFMPEG_DIR else "ffmpeg"
     ffprobe = Path(FFMPEG_DIR) / "ffprobe.exe" if FFMPEG_DIR else "ffprobe"
 
-    # Кодекті анықтайды
+    # Видео және аудио кодектерін анықтайды
     probe = subprocess.run(
         [str(ffprobe), "-v", "error", "-select_streams", "v:0",
          "-show_entries", "stream=codec_name",
@@ -573,21 +641,39 @@ def _convert_for_telegram(src: Path, uid: str) -> Path:
     )
     vcodec = probe.stdout.strip().lower()
 
+    probe_a = subprocess.run(
+        [str(ffprobe), "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=codec_name",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(src)],
+        capture_output=True, text=True
+    )
+    acodec = probe_a.stdout.strip().lower()
+
+    is_h264 = vcodec in ("h264", "avc", "avc1")
+    is_aac  = acodec in ("aac", "mp4a")
+
     out = DOWNLOAD_DIR / f"video_{uid}_tg.mp4"
 
-    if vcodec in ("h264", "avc"):
-        # Тек контейнер + faststart — жылдам, сапа жоғалмайды
+    if is_h264 and is_aac:
+        # Ең жылдам — тек контейнер + faststart, кодтамайды
         cmd = [
             str(ffmpeg), "-y", "-i", str(src),
-            "-c", "copy",
+            "-c", "copy", "-movflags", "+faststart",
+            str(out)
+        ]
+    elif is_h264:
+        # Видео дайын, тек аудио AAC-ке
+        cmd = [
+            str(ffmpeg), "-y", "-i", str(src),
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
             "-movflags", "+faststart",
             str(out)
         ]
     else:
-        # H.264-ке қайта кодтайды (AV1, VP9, HEVC т.б.)
+        # Толық encode — ultrafast ең жылдам нұсқа
         cmd = [
             str(ffmpeg), "-y", "-i", str(src),
-            "-c:v", "libx264", "-preset", "fast", "-crf", "22",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
             "-c:a", "aac", "-b:a", "192k",
             "-movflags", "+faststart",
             str(out)
@@ -622,8 +708,18 @@ def main() -> None:
     if not FFMPEG_DIR:
         logger.warning("FFmpeg табылмады! Аудио/видео merge жұмыс істемеуі мүмкін.")
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .read_timeout(300)
+        .write_timeout(300)
+        .connect_timeout(60)
+        .pool_timeout(300)
+        .build()
+    )
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("setcookies", cmd_setcookies))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_type_choice, pattern=r"^type:"))
     app.add_handler(CallbackQueryHandler(handle_quality_choice, pattern=r"^quality:"))
