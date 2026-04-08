@@ -768,7 +768,57 @@ def _ydl_download(opts: dict, url: str) -> dict:
 
 
 def _ydl_download_from_info(opts: dict, info: dict) -> dict:
-    """Алдын ала алынған info-дан жүктейді (YouTube қайта сұрамайды)."""
+    """Format URL-ін тікелей жүктейді — YouTube-ке қайта сұраныс жібермейді."""
+    import urllib.request
+
+    formats = info.get("formats", [])
+    fmt_id = opts.get("format", "best")
+    outtmpl = opts.get("outtmpl", "downloads/video.%(ext)s")
+    ffmpeg = Path(FFMPEG_DIR) / "ffmpeg" if FFMPEG_DIR else Path("ffmpeg")
+
+    def pick(fmts, fid):
+        for f in fmts:
+            if f.get("format_id") == fid:
+                return f
+        return None
+
+    headers = {
+        "User-Agent": "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X;)",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    if "+" in fmt_id:
+        vid_id, aud_id = fmt_id.split("+", 1)
+        vf = pick(formats, vid_id)
+        af = pick(formats, aud_id)
+        if vf and af and vf.get("url") and af.get("url"):
+            ext = vf.get("ext", "mp4")
+            base = outtmpl.replace("%(ext)s", ext).replace(".mp4", "")
+            vtmp = base + "_v.mp4"
+            atmp = base + "_a.m4a"
+            req_v = urllib.request.Request(vf["url"], headers=headers)
+            req_a = urllib.request.Request(af["url"], headers=headers)
+            with urllib.request.urlopen(req_v, timeout=300) as r:
+                Path(vtmp).write_bytes(r.read())
+            with urllib.request.urlopen(req_a, timeout=300) as r:
+                Path(atmp).write_bytes(r.read())
+            out = outtmpl.replace("%(ext)s", "mp4")
+            subprocess.run([str(ffmpeg), "-y", "-i", vtmp, "-i", atmp,
+                            "-c", "copy", out], capture_output=True, check=True)
+            Path(vtmp).unlink(missing_ok=True)
+            Path(atmp).unlink(missing_ok=True)
+            return info
+    else:
+        cf = pick(formats, fmt_id)
+        if cf and cf.get("url"):
+            ext = cf.get("ext", "mp4")
+            out = outtmpl.replace("%(ext)s", ext)
+            req = urllib.request.Request(cf["url"], headers=headers)
+            with urllib.request.urlopen(req, timeout=300) as r:
+                Path(out).write_bytes(r.read())
+            return info
+
+    # Fallback: yt-dlp арқылы жүктейді
     with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.process_ie_result(dict(info), download=True)
 
