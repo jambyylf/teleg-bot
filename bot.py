@@ -481,20 +481,11 @@ async def download_and_send_video(query, context, url: str, height: int | None) 
     uid = uuid.uuid4().hex[:8]
     out_template = str(DOWNLOAD_DIR / f"video_{uid}.%(ext)s")
 
-    # Форматты таңдайды — алдымен AVC, содан кейін кез келген
+    # Форматты таңдайды
     if height:
-        fmt = (
-            f"bestvideo[height<={height}][vcodec^=avc1]+bestaudio[ext=m4a]/"
-            f"bestvideo[height<={height}][vcodec^=avc]+bestaudio/"
-            f"bestvideo[height<={height}]+bestaudio/"
-            f"best[height<={height}]/best"
-        )
+        fmt = f"best[height<={height}]/best"
     else:
-        fmt = (
-            "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/"
-            "bestvideo[vcodec^=avc]+bestaudio/"
-            "bestvideo+bestaudio/best"
-        )
+        fmt = "best"
 
     opts = _base_ydl_opts(url)
     opts.update({
