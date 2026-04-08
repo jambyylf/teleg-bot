@@ -140,7 +140,9 @@ def _base_ydl_opts(url: str = "") -> dict:
         opts["extractor_args"] = {
             "tiktok": {"api_hostname": "api16-normal-c-useast1a.tiktokv.com"}
         }
-    if COOKIES_FILE.exists():
+    # YouTube-ке cookies керек емес (ios client өзі жұмыс істейді)
+    # Cookies тек Instagram/TikTok/Facebook үшін
+    if COOKIES_FILE.exists() and not _is_youtube(url):
         opts["cookiefile"] = str(COOKIES_FILE)
     return opts
 
