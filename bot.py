@@ -455,19 +455,17 @@ async def download_and_send_video(query, context, url: str, height: int | None) 
     uid = uuid.uuid4().hex[:8]
     out_template = str(DOWNLOAD_DIR / f"video_{uid}.%(ext)s")
 
-    # H.264 (avc) басымдықта — конвертациясыз Telegram-да ойнайды
+    # Форматты таңдайды — алдымен AVC, содан кейін кез келген
     if height:
         fmt = (
             f"bestvideo[height<={height}][vcodec^=avc1]+bestaudio[ext=m4a]/"
-            f"bestvideo[height<={height}][vcodec^=avc]+bestaudio[ext=m4a]/"
             f"bestvideo[height<={height}][vcodec^=avc]+bestaudio/"
             f"bestvideo[height<={height}]+bestaudio/"
-            f"best[height<={height}]"
+            f"best[height<={height}]/best"
         )
     else:
         fmt = (
             "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/"
-            "bestvideo[vcodec^=avc]+bestaudio[ext=m4a]/"
             "bestvideo[vcodec^=avc]+bestaudio/"
             "bestvideo+bestaudio/best"
         )
@@ -580,7 +578,7 @@ def _format_error(error: str, url: str = "") -> str:
     if "private" in err or "only available" in err:
         return "🔒 Бұл жабық (private) контент. Жүктеу мүмкін емес."
     if "not available" in err or "no video formats" in err:
-        return f"❌ Қате (debug):\n{error[:400]}"
+        return "❌ Бұл сілтемеде жүктелетін видео табылмады."
     return f"❌ Қате болды:\n{error[:300]}"
 
 
