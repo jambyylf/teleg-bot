@@ -500,10 +500,12 @@ async def download_and_send_video(query, context, url: str, height: int | None) 
 
     # Алдын ала алынған info болса — format ID қолмен таңдаймыз
     stored_info = context.user_data.get("dl_info") if context else None
+    fmt_id = None
     if stored_info and _is_youtube(url):
         fmt_id = _pick_format_id(stored_info, height)
         opts["format"] = fmt_id
-        logger.info(f"YouTube format ID: {fmt_id}")
+        n_formats = len(stored_info.get("formats", []))
+        await query.edit_message_text(f"⏳ Format: {fmt_id} (жалпы: {n_formats}), жүктелуде...")
 
     try:
         loop = asyncio.get_event_loop()
