@@ -125,7 +125,7 @@ def _base_ydl_opts(url: str = "") -> dict:
     }
     if _is_youtube(url):
         opts["extractor_args"] = {
-            "youtube": {"player_client": ["tv_embedded", "android_vr", "mweb"]}
+            "youtube": {"player_client": ["android_vr", "tv_embedded", "android", "ios"]}
         }
         opts["socket_timeout"] = 30
     if _is_tiktok(url):
@@ -146,7 +146,7 @@ def _ydl_download_with_retry(opts: dict, url: str) -> dict:
         err_str = str(first_err).lower()
         # YouTube датацентр блогы — басқа client-пен retry
         if _is_youtube(url) and any(k in err_str for k in ("sign in", "login", "bot", "confirm")):
-            for client in [["android"], ["ios"], ["mweb"]]:
+            for client in [["android_vr"], ["android"], ["ios"], ["web_creator"], ["mweb"]]:
                 retry_opts = dict(opts)
                 retry_opts["extractor_args"] = {"youtube": {"player_client": client}}
                 try:
@@ -197,7 +197,7 @@ def get_video_info(url: str) -> dict:
         err = str(e).lower()
         # YouTube датацентр блогы — басқа client-пен retry
         if _is_youtube(url) and any(k in err for k in ("sign in", "login", "bot", "confirm")):
-            for client in [["android"], ["ios"], ["mweb"]]:
+            for client in [["android_vr"], ["android"], ["ios"], ["web_creator"], ["mweb"]]:
                 retry = dict(opts)
                 retry["extractor_args"] = {"youtube": {"player_client": client}}
                 try:
