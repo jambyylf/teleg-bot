@@ -276,6 +276,20 @@ def get_available_video_qualities(info: dict) -> list[dict]:
 # Handlers
 # ---------------------------------------------------------------------------
 
+async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    cookies_ok = COOKIES_FILE.exists()
+    cookies_size = COOKIES_FILE.stat().st_size if cookies_ok else 0
+    env_ok = bool(os.getenv("COOKIES_CONTENT"))
+    ffmpeg_ok = bool(FFMPEG_DIR)
+    await update.message.reply_text(
+        f"🔧 Debug:\n"
+        f"cookies.txt: {'✅ бар' if cookies_ok else '❌ жоқ'} ({cookies_size} байт)\n"
+        f"COOKIES_CONTENT env: {'✅' if env_ok else '❌'}\n"
+        f"FFmpeg: {'✅' if ffmpeg_ok else '❌'}\n"
+        f"Python path: {COOKIES_FILE.resolve()}"
+    )
+
+
 async def cmd_setcookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "🍪 Cookies файлын жіберіңіз:\n\n"
@@ -762,6 +776,7 @@ def main() -> None:
         .build()
     )
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("debug", cmd_debug))
     app.add_handler(CommandHandler("setcookies", cmd_setcookies))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
