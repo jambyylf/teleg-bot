@@ -122,6 +122,7 @@ def _base_ydl_opts(url: str = "") -> dict:
         "no_warnings": True,
         "nocheckcertificate": True,
         "legacyserverconnect": True,
+        "check_formats": False,
     }
     if _is_youtube(url):
         if COOKIES_FILE.exists():
