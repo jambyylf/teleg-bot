@@ -124,9 +124,15 @@ def _base_ydl_opts(url: str = "") -> dict:
         "legacyserverconnect": True,
     }
     if _is_youtube(url):
-        opts["extractor_args"] = {
-            "youtube": {"player_client": ["android_vr", "tv_embedded", "android", "ios"]}
-        }
+        if COOKIES_FILE.exists():
+            # Cookies бар болса — web client жақсы жұмыс істейді
+            opts["extractor_args"] = {
+                "youtube": {"player_client": ["web", "tv_embedded"]}
+            }
+        else:
+            opts["extractor_args"] = {
+                "youtube": {"player_client": ["android_vr", "tv_embedded", "android", "ios"]}
+            }
         opts["socket_timeout"] = 30
     if _is_tiktok(url):
         opts["impersonate"] = ImpersonateTarget("chrome")
@@ -144,9 +150,12 @@ def _ydl_download_with_retry(opts: dict, url: str) -> dict:
         return _ydl_download(opts, url)
     except Exception as first_err:
         err_str = str(first_err).lower()
-        # YouTube датацентр блогы — басқа client-пен retry
-        if _is_youtube(url) and any(k in err_str for k in ("sign in", "login", "bot", "confirm")):
-            for client in [["android_vr"], ["android"], ["ios"], ["web_creator"], ["mweb"]]:
+        # YouTube блогы — басқа client-пен retry
+        if _is_youtube(url) and any(k in err_str for k in ("sign in", "login", "bot", "confirm",
+                                                             "not available", "format")):
+            clients = [["web"], ["tv_embedded"], ["android"], ["ios"]] if COOKIES_FILE.exists() \
+                      else [["android_vr"], ["android"], ["ios"], ["mweb"]]
+            for client in clients:
                 retry_opts = dict(opts)
                 retry_opts["extractor_args"] = {"youtube": {"player_client": client}}
                 try:
@@ -196,8 +205,11 @@ def get_video_info(url: str) -> dict:
     except Exception as e:
         err = str(e).lower()
         # YouTube датацентр блогы — басқа client-пен retry
-        if _is_youtube(url) and any(k in err for k in ("sign in", "login", "bot", "confirm")):
-            for client in [["android_vr"], ["android"], ["ios"], ["web_creator"], ["mweb"]]:
+        if _is_youtube(url) and any(k in err for k in ("sign in", "login", "bot", "confirm",
+                                                         "not available", "format")):
+            clients = [["web"], ["tv_embedded"], ["android"], ["ios"]] if COOKIES_FILE.exists() \
+                      else [["android_vr"], ["android"], ["ios"], ["mweb"]]
+            for client in clients:
                 retry = dict(opts)
                 retry["extractor_args"] = {"youtube": {"player_client": client}}
                 try:
