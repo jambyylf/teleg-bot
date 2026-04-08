@@ -580,7 +580,7 @@ def _format_error(error: str, url: str = "") -> str:
     if "private" in err or "only available" in err:
         return "🔒 Бұл жабық (private) контент. Жүктеу мүмкін емес."
     if "not available" in err or "no video formats" in err:
-        return "❌ Бұл сілтемеде жүктелетін видео табылмады."
+        return f"❌ Қате (debug):\n{error[:400]}"
     return f"❌ Қате болды:\n{error[:300]}"
 
 
