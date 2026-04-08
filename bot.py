@@ -21,6 +21,8 @@ import yt_dlp
 from yt_dlp.networking.impersonate import ImpersonateTarget
 from hydrogram import Client
 
+import base64
+
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -28,6 +30,15 @@ API_ID    = os.getenv("API_ID")
 API_HASH  = os.getenv("API_HASH")
 DOWNLOAD_DIR = Path("downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
+
+# Railway env var арқылы cookies жүктеу (base64 форматында)
+COOKIES_FILE = Path("cookies.txt")
+_cookies_b64 = os.getenv("COOKIES_CONTENT")
+if _cookies_b64 and not COOKIES_FILE.exists():
+    try:
+        COOKIES_FILE.write_bytes(base64.b64decode(_cookies_b64))
+    except Exception:
+        pass
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -50,9 +61,6 @@ AUTH_DOMAINS = (
     "threads.net", "threads.com", "tiktok.com",
     "vk.com", "vk.ru", "vkvideo.ru",
 )
-
-# cookies.txt файлының жолы (Netscape форматы)
-COOKIES_FILE = Path("cookies.txt")
 
 USER_URL_KEY = "dl_url"
 
@@ -116,7 +124,10 @@ def _base_ydl_opts(url: str = "") -> dict:
         "legacyserverconnect": True,
     }
     if _is_youtube(url):
-        opts["extractor_args"] = {"youtube": {"player_client": ["tv_embedded"]}}
+        opts["extractor_args"] = {
+            "youtube": {"player_client": ["tv_embedded", "android_vr", "mweb"]}
+        }
+        opts["socket_timeout"] = 30
     if _is_tiktok(url):
         opts["impersonate"] = ImpersonateTarget("chrome")
         opts["extractor_args"] = {
@@ -133,6 +144,15 @@ def _ydl_download_with_retry(opts: dict, url: str) -> dict:
         return _ydl_download(opts, url)
     except Exception as first_err:
         err_str = str(first_err).lower()
+        # YouTube датацентр блогы — басқа client-пен retry
+        if _is_youtube(url) and any(k in err_str for k in ("sign in", "login", "bot", "confirm")):
+            for client in [["android"], ["ios"], ["mweb"]]:
+                retry_opts = dict(opts)
+                retry_opts["extractor_args"] = {"youtube": {"player_client": client}}
+                try:
+                    return _ydl_download(retry_opts, url)
+                except Exception:
+                    continue
         # Auth/block қатесі болса — cookie немесе басқа параметрлермен retry
         if any(k in err_str for k in ("blocked", "login", "authentication",
                                        "registered", "cookies", "private")):
@@ -175,6 +195,16 @@ def get_video_info(url: str) -> dict:
             return ydl.extract_info(url, download=False)
     except Exception as e:
         err = str(e).lower()
+        # YouTube датацентр блогы — басқа client-пен retry
+        if _is_youtube(url) and any(k in err for k in ("sign in", "login", "bot", "confirm")):
+            for client in [["android"], ["ios"], ["mweb"]]:
+                retry = dict(opts)
+                retry["extractor_args"] = {"youtube": {"player_client": client}}
+                try:
+                    with yt_dlp.YoutubeDL(retry) as ydl:
+                        return ydl.extract_info(url, download=False)
+                except Exception:
+                    continue
         if "tiktok" in url.lower() and any(k in err for k in ("blocked", "login")):
             for hostname in [
                 "api19-normal-c-useast1a.tiktokv.com",
@@ -517,11 +547,15 @@ def _format_error(error: str, url: str = "") -> str:
     err = error.lower()
     url_lower = url.lower()
 
-    is_threads = "threads" in url_lower
+    is_youtube = any(d in url_lower for d in ("youtube.com", "youtu.be"))
     is_tiktok = "tiktok.com" in url_lower
     is_vk = any(d in url_lower for d in ("vk.com", "vk.ru", "vkvideo.ru"))
     no_cookies = not COOKIES_FILE.exists()
 
+    # YouTube датацентр IP блогы — cookies емес, серверден жүктеу мәселесі
+    if is_youtube and ("sign in" in err or "bot" in err or "confirm your age" in err
+                       or ("login" in err and "cookies" not in err)):
+        return "❌ YouTube серверден жүктеуді блоктады. Сілтемені қайта жіберіп көріңіз."
     if is_tiktok and ("blocked" in err or "ip address" in err):
         if no_cookies:
             return (
@@ -534,7 +568,7 @@ def _format_error(error: str, url: str = "") -> str:
             "🔐 Бұл VK видеосы кіруді қажет етеді.\n\n"
             + COOKIES_INSTRUCTION
         )
-    if "registered users" in err or "authentication" in err or "login" in err or "cookies" in err:
+    if "registered users" in err or "authentication" in err or ("login" in err and not is_youtube) or "cookies" in err:
         return (
             "🔐 Бұл контент кіруді қажет етеді.\n\n"
             + COOKIES_INSTRUCTION
