@@ -367,6 +367,7 @@ async def handle_type_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
             qualities = get_available_video_qualities(info)
             title = info.get("title") or ""
             context.user_data["dl_title"] = title
+            context.user_data["dl_info"] = info  # Download кезінде қайта сұрамау үшін
 
             if not qualities:
                 # Сапа таңдау мүмкін емес — тікелей жүктейді
@@ -484,9 +485,11 @@ async def download_and_send_video(query, context, url: str, height: int | None) 
 
     # Форматты таңдайды
     if height:
-        fmt = f"best[height<={height}]/best"
+        fmt = (f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/"
+               f"bestvideo[height<={height}]+bestaudio/"
+               f"best[height<={height}]/best")
     else:
-        fmt = "best"
+        fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
 
     opts = _base_ydl_opts(url)
     opts.update({
@@ -495,9 +498,17 @@ async def download_and_send_video(query, context, url: str, height: int | None) 
         "merge_output_format": "mp4",
     })
 
+    # Алдын ала алынған info болса — қайта сұрамаймыз
+    stored_info = context.user_data.get("dl_info") if context else None
+
     try:
         loop = asyncio.get_event_loop()
-        info = await loop.run_in_executor(None, lambda: _ydl_download_with_retry(opts, url))
+        if stored_info and _is_youtube(url):
+            info = await loop.run_in_executor(
+                None, lambda: _ydl_download_from_info(opts, stored_info)
+            )
+        else:
+            info = await loop.run_in_executor(None, lambda: _ydl_download_with_retry(opts, url))
         title = context.user_data.get("dl_title") or info.get("title") or "video"
 
         mp4_files = list(DOWNLOAD_DIR.glob(f"video_{uid}.mp4"))
@@ -746,6 +757,12 @@ def _safe_name(title: str) -> str:
 def _ydl_download(opts: dict, url: str) -> dict:
     with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=True)
+
+
+def _ydl_download_from_info(opts: dict, info: dict) -> dict:
+    """Алдын ала алынған info-дан жүктейді (YouTube қайта сұрамайды)."""
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        return ydl.process_ie_result(dict(info), download=True)
 
 
 # ---------------------------------------------------------------------------
