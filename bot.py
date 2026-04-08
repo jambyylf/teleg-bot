@@ -498,8 +498,12 @@ async def download_and_send_video(query, context, url: str, height: int | None) 
         "merge_output_format": "mp4",
     })
 
-    # Алдын ала алынған info болса — қайта сұрамаймыз
+    # Алдын ала алынған info болса — format ID қолмен таңдаймыз
     stored_info = context.user_data.get("dl_info") if context else None
+    if stored_info and _is_youtube(url):
+        fmt_id = _pick_format_id(stored_info, height)
+        opts["format"] = fmt_id
+        logger.info(f"YouTube format ID: {fmt_id}")
 
     try:
         loop = asyncio.get_event_loop()
@@ -763,6 +767,36 @@ def _ydl_download_from_info(opts: dict, info: dict) -> dict:
     """Алдын ала алынған info-дан жүктейді (YouTube қайта сұрамайды)."""
     with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.process_ie_result(dict(info), download=True)
+
+
+def _pick_format_id(info: dict, height: int | None) -> str:
+    """Formats тізімінен ең жақсы format ID-ін қолмен таңдайды."""
+    formats = info.get("formats", [])
+    if not formats:
+        return "best"
+
+    # Видео + аудио бірге (combined)
+    combined = [f for f in formats
+                if f.get("vcodec", "none") != "none"
+                and f.get("acodec", "none") != "none"
+                and f.get("format_id")]
+    if combined:
+        pool = [f for f in combined if not height or (f.get("height") or 0) <= height] or combined
+        best = max(pool, key=lambda f: f.get("height") or 0)
+        return best["format_id"]
+
+    # Бөлек видео + аудио
+    vids = [f for f in formats if f.get("vcodec", "none") != "none"
+            and f.get("acodec", "none") == "none" and f.get("format_id")]
+    auds = [f for f in formats if f.get("vcodec", "none") == "none"
+            and f.get("acodec", "none") != "none" and f.get("format_id")]
+    if vids and auds:
+        vpool = [f for f in vids if not height or (f.get("height") or 0) <= height] or vids
+        best_v = max(vpool, key=lambda f: f.get("height") or 0)
+        best_a = max(auds, key=lambda f: f.get("abr") or 0)
+        return f"{best_v['format_id']}+{best_a['format_id']}"
+
+    return formats[-1]["format_id"] if formats else "best"
 
 
 # ---------------------------------------------------------------------------
