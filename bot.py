@@ -125,9 +125,9 @@ def _base_ydl_opts(url: str = "") -> dict:
     }
     if _is_youtube(url):
         if COOKIES_FILE.exists():
-            # Cookies бар болса — web client жақсы жұмыс істейді
+            # ios/android клиенттері сервердан po_token талап етпейді
             opts["extractor_args"] = {
-                "youtube": {"player_client": ["web", "tv_embedded"]}
+                "youtube": {"player_client": ["ios", "android", "tv_embedded"]}
             }
         else:
             opts["extractor_args"] = {
@@ -153,7 +153,7 @@ def _ydl_download_with_retry(opts: dict, url: str) -> dict:
         # YouTube блогы — басқа client-пен retry
         if _is_youtube(url) and any(k in err_str for k in ("sign in", "login", "bot", "confirm",
                                                              "not available", "format")):
-            clients = [["web"], ["tv_embedded"], ["android"], ["ios"]] if COOKIES_FILE.exists() \
+            clients = [["ios"], ["android"], ["tv_embedded"], ["mweb"]] if COOKIES_FILE.exists() \
                       else [["android_vr"], ["android"], ["ios"], ["mweb"]]
             for client in clients:
                 retry_opts = dict(opts)
@@ -207,7 +207,7 @@ def get_video_info(url: str) -> dict:
         # YouTube датацентр блогы — басқа client-пен retry
         if _is_youtube(url) and any(k in err for k in ("sign in", "login", "bot", "confirm",
                                                          "not available", "format")):
-            clients = [["web"], ["tv_embedded"], ["android"], ["ios"]] if COOKIES_FILE.exists() \
+            clients = [["ios"], ["android"], ["tv_embedded"], ["mweb"]] if COOKIES_FILE.exists() \
                       else [["android_vr"], ["android"], ["ios"], ["mweb"]]
             for client in clients:
                 retry = dict(opts)
