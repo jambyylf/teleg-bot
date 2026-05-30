@@ -1,2 +1,18 @@
 [phases.setup]
-aptPkgs = ["ffmpeg"]
+aptPkgs = [
+  "ffmpeg",
+  "libnss3", "libnspr4", "libatk1.0-0", "libatk-bridge2.0-0",
+  "libcups2", "libdrm2", "libxkbcommon0", "libxcomposite1",
+  "libxdamage1", "libxfixes3", "libxrandr2", "libgbm1",
+  "libasound2", "libx11-6", "libx11-xcb1", "libxcb1",
+  "libxext6", "fonts-liberation"
+]
+
+[phases.install]
+cmds = [
+  "pip install -r requirements.txt",
+  "playwright install chromium"
+]
+
+[start]
+cmd = "python bot.py"

@@ -18,7 +18,6 @@ from telegram.ext import (
     filters,
 )
 import yt_dlp
-from yt_dlp.networking.impersonate import ImpersonateTarget
 from hydrogram import Client
 
 import base64
@@ -63,6 +62,10 @@ AUTH_DOMAINS = (
 )
 
 USER_URL_KEY = "dl_url"
+ACTIVE_USERS: set[int] = set()
+
+def _is_threads(url: str) -> bool:
+    return any(d in url.lower() for d in ("threads.net", "threads.com"))
 
 # Query параметрлерін алып тастайтын домендер
 CLEAN_URL_DOMAINS = (
@@ -76,12 +79,174 @@ CLEAN_URL_DOMAINS = (
 def _clean_url(url: str) -> str:
     """Query параметрлерін алып тастайды және домендерді түзетеді."""
     from urllib.parse import urlparse, urlunparse
-    # threads.com → threads.net (yt-dlp тек threads.net қолдайды)
+    # yt-dlp тек threads.net қолдайды
     url = url.replace("www.threads.com", "www.threads.net").replace("threads.com", "threads.net")
     parsed = urlparse(url)
     if any(d in parsed.netloc for d in CLEAN_URL_DOMAINS):
         return urlunparse(parsed._replace(query="", fragment=""))
     return url
+
+
+def _patch_cookies_for_threads(path: str) -> None:
+    """threads.com cookies-ін threads.net-ке де жазады."""
+    try:
+        content = Path(path).read_text(encoding="utf-8")
+        lines = content.splitlines()
+        extra = []
+        for line in lines:
+            if line.startswith(".threads.com") or line.startswith("threads.com"):
+                extra.append(line.replace("threads.com", "threads.net", 1))
+        if extra:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write("\n" + "\n".join(extra))
+    except Exception:
+        pass
+
+
+def _make_progress_hook(loop: asyncio.AbstractEventLoop, msg):
+    """yt-dlp жүктеу барысында хабарды жаңартады."""
+    last_pct = [0]
+
+    def hook(d: dict) -> None:
+        if d.get("status") != "downloading":
+            return
+        total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+        downloaded = d.get("downloaded_bytes", 0)
+        if total <= 0:
+            return
+        pct = int(downloaded * 100 / total)
+        if pct - last_pct[0] < 10:
+            return
+        last_pct[0] = pct
+        speed = d.get("speed") or 0
+        eta = d.get("eta") or 0
+        speed_str = f" • {speed / 1024 / 1024:.1f} МБ/с" if speed > 0 else ""
+        eta_str = f" • ⏱{eta}с" if 0 < eta < 3600 else ""
+        asyncio.run_coroutine_threadsafe(
+            msg.edit_text(f"⬇️ Жүктелуде... {pct}%{speed_str}{eta_str}"),
+            loop,
+        )
+
+    return hook
+
+
+def _format_duration(seconds: int | None) -> str:
+    """Секундты 1:23:45 форматына айналдырады."""
+    if not seconds:
+        return ""
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+# ---------------------------------------------------------------------------
+# Threads жүктеуші (Instagram API арқылы)
+# ---------------------------------------------------------------------------
+
+def _load_cookies_dict() -> dict:
+    """cookies.txt → {name: value} сөздігі"""
+    cookies: dict = {}
+    if not COOKIES_FILE.exists():
+        return cookies
+    for line in COOKIES_FILE.read_text(encoding="utf-8").splitlines():
+        if line.startswith("#") or "\t" not in line:
+            continue
+        parts = line.strip().split("\t")
+        if len(parts) >= 7:
+            cookies[parts[5]] = parts[6]
+    return cookies
+
+
+def _threads_download(url: str, out_dir: Path) -> tuple[Path, str]:
+    """
+    Threads постынан видеоны Playwright headless браузер арқылы жүктейді.
+    Нақты браузер сессиясы — cookies.txt қажет.
+    """
+    import requests
+    import re
+    from playwright.sync_api import sync_playwright
+
+    # cookies.txt → Playwright форматы
+    pw_cookies = []
+    if COOKIES_FILE.exists():
+        for line in COOKIES_FILE.read_text(encoding="utf-8").splitlines():
+            if line.startswith("#") or "\t" not in line:
+                continue
+            parts = line.strip().split("\t")
+            if len(parts) >= 7:
+                pw_cookies.append({
+                    "name": parts[5],
+                    "value": parts[6],
+                    "domain": parts[0].lstrip("."),
+                    "path": parts[2],
+                    "secure": parts[3] == "TRUE",
+                })
+
+    clean_url = url.split("?")[0].rstrip("/")
+    video_urls: list[str] = []
+    title = clean_url.split("/post/")[-1]
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        ctx = browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/125.0.0.0 Safari/537.36"
+            )
+        )
+        if pw_cookies:
+            ctx.add_cookies(pw_cookies)
+
+        page = ctx.new_page()
+
+        def _on_response(resp):
+            ru = resp.url
+            if ".mp4" in ru and "cdninstagram.com" in ru:
+                video_urls.append(ru)
+
+        page.on("response", _on_response)
+        page.goto(clean_url, wait_until="networkidle", timeout=30000)
+
+        # OG description → атауы
+        try:
+            og = page.query_selector('meta[property="og:description"]')
+            if og:
+                title = og.get_attribute("content") or title
+        except Exception:
+            pass
+
+        browser.close()
+
+    if not video_urls:
+        raise Exception(
+            "Threads видео URL табылмады.\n"
+            "Cookies ескірген болуы мүмкін — жаңа cookies.txt жіберіңіз."
+        )
+
+    # Ең жоғары сапалы URL таңдайды (C3.XXXX width параметрі бойынша)
+    def _quality(u: str) -> int:
+        m = re.search(r"C3\.(\d+)", u)
+        return int(m.group(1)) if m else 0
+
+    video_urls.sort(key=_quality, reverse=True)
+    best_url = video_urls[0]
+
+    # Жүктейді
+    uid = uuid.uuid4().hex[:8]
+    out_path = out_dir / f"threads_{uid}.mp4"
+    resp = requests.get(
+        best_url,
+        headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.threads.net/"},
+        timeout=300,
+        stream=True,
+    )
+    resp.raise_for_status()
+    with open(out_path, "wb") as f:
+        for chunk in resp.iter_content(chunk_size=1024 * 1024):
+            f.write(chunk)
+
+    return out_path, title[:80]
 
 
 # ---------------------------------------------------------------------------
@@ -136,10 +301,32 @@ def _base_ydl_opts(url: str = "") -> dict:
             }
         opts["socket_timeout"] = 30
     if _is_tiktok(url):
-        opts["impersonate"] = ImpersonateTarget("chrome")
-        opts["extractor_args"] = {
-            "tiktok": {"api_hostname": "api16-normal-c-useast1a.tiktokv.com"}
-        }
+        if COOKIES_FILE.exists():
+            # Cookies бар кезде — web extractor (браузер cookies жұмыс істейді)
+            opts["http_headers"] = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/125.0.0.0 Safari/537.36"
+                ),
+                "Referer": "https://www.tiktok.com/",
+            }
+        else:
+            # Cookies жоқ кезде — mobile API
+            opts["extractor_args"] = {
+                "tiktok": {
+                    "api_hostname": ["api16-normal-c-useast1a.tiktokv.com"],
+                    "app_name": ["musical_ly"],
+                    "app_version": ["35.1.3"],
+                }
+            }
+            opts["http_headers"] = {
+                "User-Agent": (
+                    "com.zhiliaoapp.musically/2023501030 "
+                    "(Linux; U; Android 13; en_US; Pixel 7; "
+                    "Build/TQ3A.230901.001; Cronet/58.0.2991.0)"
+                )
+            }
     # YouTube-ке cookies керек емес (ios client өзі жұмыс істейді)
     # Cookies тек Instagram/TikTok/Facebook үшін
     if COOKIES_FILE.exists() and not _is_youtube(url):
@@ -165,23 +352,26 @@ def _ydl_download_with_retry(opts: dict, url: str) -> dict:
                     return _ydl_download(retry_opts, url)
                 except Exception:
                     continue
+        # TikTok — кез келген қатеде басқа hostname/версиямен retry
+        if _is_tiktok(url):
+            tiktok_configs = [
+                {"api_hostname": ["api19-normal-c-useast1a.tiktokv.com"], "app_name": ["musical_ly"], "app_version": ["26.1.3"]},
+                {"api_hostname": ["api22-normal-c-useast1a.tiktokv.com"], "app_name": ["musical_ly"], "app_version": ["26.1.3"]},
+                {"api_hostname": ["api16-normal-c-useast1a.tiktokv.com"], "app_name": ["trill"], "app_version": ["26.1.3"]},
+                {"api_hostname": ["api19-normal-c-useast1a.tiktokv.com"], "app_name": ["musical_ly"], "app_version": ["35.1.3"]},
+            ]
+            for cfg in tiktok_configs:
+                retry_opts = dict(opts)
+                retry_opts["extractor_args"] = {"tiktok": cfg}
+                try:
+                    return _ydl_download(retry_opts, url)
+                except Exception:
+                    continue
+
         # Auth/block қатесі болса — cookie немесе басқа параметрлермен retry
         if any(k in err_str for k in ("blocked", "login", "authentication",
                                        "registered", "cookies", "private")):
             retry_opts = dict(opts)
-            # TikTok үшін басқа API hostname-мен қайталайды
-            if "tiktok" in url.lower():
-                for hostname in [
-                    "api19-normal-c-useast1a.tiktokv.com",
-                    "api22-normal-c-useast1a.tiktokv.com",
-                ]:
-                    retry_opts["extractor_args"] = {
-                        "tiktok": {"api_hostname": hostname}
-                    }
-                    try:
-                        return _ydl_download(retry_opts, url)
-                    except Exception:
-                        continue
             # Instagram үшін cookies olmadan басқа user-agent-пен
             if "instagram.com" in url.lower():
                 retry_opts["http_headers"] = {
@@ -220,13 +410,16 @@ def get_video_info(url: str) -> dict:
                         return ydl.extract_info(url, download=False)
                 except Exception:
                     continue
-        if "tiktok" in url.lower() and any(k in err for k in ("blocked", "login")):
-            for hostname in [
-                "api19-normal-c-useast1a.tiktokv.com",
-                "api22-normal-c-useast1a.tiktokv.com",
-            ]:
+        if _is_tiktok(url):
+            tiktok_configs = [
+                {"api_hostname": ["api19-normal-c-useast1a.tiktokv.com"], "app_name": ["musical_ly"], "app_version": ["26.1.3"]},
+                {"api_hostname": ["api22-normal-c-useast1a.tiktokv.com"], "app_name": ["musical_ly"], "app_version": ["26.1.3"]},
+                {"api_hostname": ["api16-normal-c-useast1a.tiktokv.com"], "app_name": ["trill"], "app_version": ["26.1.3"]},
+                {"api_hostname": ["api19-normal-c-useast1a.tiktokv.com"], "app_name": ["musical_ly"], "app_version": ["35.1.3"]},
+            ]
+            for cfg in tiktok_configs:
                 retry = dict(opts)
-                retry["extractor_args"] = {"tiktok": {"api_hostname": hostname}}
+                retry["extractor_args"] = {"tiktok": cfg}
                 try:
                     with yt_dlp.YoutubeDL(retry) as ydl:
                         return ydl.extract_info(url, download=False)
@@ -309,6 +502,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     file = await context.bot.get_file(doc.file_id)
     await file.download_to_drive(str(COOKIES_FILE))
+    _patch_cookies_for_threads(str(COOKIES_FILE))
     await update.message.reply_text(
         f"✅ cookies.txt сақталды ({doc.file_size // 1024} КБ)\n"
         "Енді Instagram, Threads, TikTok, Facebook жұмыс істейді!"
@@ -334,17 +528,64 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    url = match.group(0)
-    context.user_data[USER_URL_KEY] = _clean_url(url)
+    user_id = update.effective_user.id
+    if user_id in ACTIVE_USERS:
+        await update.message.reply_text("⏳ Алдыңғы жүктеу аяқталмады. Күте тұрыңыз.")
+        return
+
+    url = _clean_url(match.group(0))
+    context.user_data[USER_URL_KEY] = url
+    context.user_data.pop("dl_info", None)
 
     keyboard = [[
         InlineKeyboardButton("🎵 Аудио (MP3)", callback_data="type:audio"),
         InlineKeyboardButton("🎬 Видео (MP4)", callback_data="type:video"),
     ]]
-    await update.message.reply_text(
-        "Не жүктегіңіз келеді?",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
+
+    # Threads — yt-dlp қолдамайды, тікелей кнопка көрсетеміз
+    if _is_threads(url):
+        if not COOKIES_FILE.exists():
+            await update.message.reply_text(
+                "🔐 Threads жүктеу үшін cookies керек.\n\n"
+                "/setcookies командасын жіберіңіз."
+            )
+            return
+        msg = await update.message.reply_text("🧵 Threads посты")
+        await msg.edit_text("🧵 Threads посты\n\nНе жүктегіңіз келеді?",
+                            reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    msg = await update.message.reply_text("🔍 Сілтеме тексерілуде...")
+    try:
+        loop = asyncio.get_event_loop()
+        info = await loop.run_in_executor(None, get_video_info, url)
+        context.user_data["dl_info"] = info
+
+        title = info.get("title") or ""
+        channel = info.get("channel") or info.get("uploader") or ""
+        dur_str = _format_duration(info.get("duration"))
+        is_playlist = info.get("_type") == "playlist"
+
+        lines = [f"🎬 <b>{title[:100]}</b>"]
+        meta = []
+        if dur_str:
+            meta.append(f"⏱ {dur_str}")
+        if channel:
+            meta.append(f"📺 {channel[:40]}")
+        if meta:
+            lines.append(" | ".join(meta))
+        if is_playlist:
+            count = len(info.get("entries") or [])
+            lines.append(f"📋 Плейлист: {count} видео")
+
+        await msg.edit_text(
+            "\n".join(lines),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+    except Exception as e:
+        logger.warning(f"Preview қатесі: {e}")
+        await msg.edit_text("Не жүктегіңіз келеді?", reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 async def handle_type_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -362,14 +603,20 @@ async def handle_type_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await download_and_send_audio(query, context, url)
 
     elif choice == "video":
+        # Threads — тікелей жүктейміз, сапа таңдаусыз
+        if _is_threads(url):
+            await query.edit_message_text("⏳ Threads видеосы жүктелуде...")
+            await download_and_send_video(query, context, url, height=None)
+            return
+
         await query.edit_message_text("⏳ Сапалар анықталуда...")
         try:
             loop = asyncio.get_event_loop()
-            info = await loop.run_in_executor(None, get_video_info, url)
+            info = context.user_data.get("dl_info") or await loop.run_in_executor(None, get_video_info, url)
             qualities = get_available_video_qualities(info)
             title = info.get("title") or ""
             context.user_data["dl_title"] = title
-            context.user_data["dl_info"] = info  # Download кезінде қайта сұрамау үшін
+            context.user_data["dl_info"] = info
 
             if not qualities:
                 # Сапа таңдау мүмкін емес — тікелей жүктейді
@@ -429,9 +676,46 @@ async def handle_quality_choice(update: Update, context: ContextTypes.DEFAULT_TY
 # ---------------------------------------------------------------------------
 
 async def download_and_send_audio(query, context, url: str) -> None:
+    user_id = query.from_user.id
+    if user_id in ACTIVE_USERS:
+        await query.edit_message_text("⏳ Алдыңғы жүктеу аяқталмады.")
+        return
+    ACTIVE_USERS.add(user_id)
+
+    # Threads — видеоны жүктеп, аудио шығарамыз
+    if _is_threads(url):
+        try:
+            loop = asyncio.get_event_loop()
+            video_path, title = await loop.run_in_executor(None, _threads_download, url, DOWNLOAD_DIR)
+            uid = video_path.stem.split("_")[1]
+            # FFmpeg арқылы аудио шығару
+            ffmpeg = Path(FFMPEG_DIR) / "ffmpeg.exe" if FFMPEG_DIR else Path("ffmpeg")
+            mp3_path = DOWNLOAD_DIR / f"audio_{uid}.mp3"
+            subprocess.run([
+                str(ffmpeg), "-y", "-i", str(video_path),
+                "-vn", "-acodec", "libmp3lame", "-b:a", "320k", str(mp3_path)
+            ], capture_output=True, check=True)
+            video_path.unlink(missing_ok=True)
+            await query.edit_message_text("📤 Жіберілуде...")
+            with open(mp3_path, "rb") as f:
+                await context.bot.send_audio(
+                    chat_id=query.message.chat_id, audio=f,
+                    title=title[:64], filename=f"{_safe_name(title)}.mp3",
+                    read_timeout=600, write_timeout=600, connect_timeout=60,
+                )
+            await query.edit_message_text("✅ Аудио жіберілді!")
+            mp3_path.unlink(missing_ok=True)
+        except Exception as e:
+            logger.error(f"Threads audio error: {e}", exc_info=True)
+            await query.edit_message_text(f"❌ Threads аудио қатесі:\n{str(e)[:200]}")
+        finally:
+            ACTIVE_USERS.discard(user_id)
+        return
+
     uid = uuid.uuid4().hex[:8]
     out_template = str(DOWNLOAD_DIR / f"audio_{uid}.%(ext)s")
 
+    loop = asyncio.get_event_loop()
     opts = _base_ydl_opts(url)
     opts.update({
         "format": "bestaudio/best",
@@ -441,10 +725,10 @@ async def download_and_send_audio(query, context, url: str) -> None:
             "preferredcodec": "mp3",
             "preferredquality": "320",
         }],
+        "progress_hooks": [_make_progress_hook(loop, query.message)],
     })
 
     try:
-        loop = asyncio.get_event_loop()
         info = await loop.run_in_executor(None, lambda: _ydl_download_with_retry(opts, url))
         title = info.get("title") or "audio"
 
@@ -479,9 +763,49 @@ async def download_and_send_audio(query, context, url: str) -> None:
         for f in DOWNLOAD_DIR.glob(f"audio_{uid}.*"):
             f.unlink(missing_ok=True)
         await query.edit_message_text(_format_error(str(e), url))
+    finally:
+        ACTIVE_USERS.discard(user_id)
 
 
 async def download_and_send_video(query, context, url: str, height: int | None) -> None:
+    user_id = query.from_user.id
+    if user_id in ACTIVE_USERS:
+        await query.edit_message_text("⏳ Алдыңғы жүктеу аяқталмады.")
+        return
+    ACTIVE_USERS.add(user_id)
+
+    # Threads — Instagram API арқылы жүктейміз
+    if _is_threads(url):
+        try:
+            loop = asyncio.get_event_loop()
+            video_path, title = await loop.run_in_executor(None, _threads_download, url, DOWNLOAD_DIR)
+            await query.edit_message_text("⚙️ Telegram үшін өңделуде...")
+            uid = video_path.stem.split("_")[1] if "_" in video_path.stem else uuid.uuid4().hex[:8]
+            video_path = await loop.run_in_executor(None, lambda: _convert_for_telegram(video_path, uid))
+            size_mb = video_path.stat().st_size / (1024 * 1024)
+            vw, vh = _get_video_dimensions(video_path)
+            await query.edit_message_text(f"📤 Жіберілуде... ({size_mb:.0f} МБ)")
+            if size_mb > 50 and API_ID and API_HASH:
+                await _pyro_send_video(query.message.chat_id, video_path, title, query.message, vw, vh)
+            else:
+                with open(video_path, "rb") as f:
+                    await context.bot.send_video(
+                        chat_id=query.message.chat_id, video=f,
+                        caption=f"🎬 {title[:200]}",
+                        filename=f"{_safe_name(title)}.mp4",
+                        supports_streaming=True,
+                        width=vw or None, height=vh or None,
+                        read_timeout=600, write_timeout=600, connect_timeout=60,
+                    )
+            await query.edit_message_text("✅ Видео жіберілді!")
+            video_path.unlink(missing_ok=True)
+        except Exception as e:
+            logger.error(f"Threads video error: {e}", exc_info=True)
+            await query.edit_message_text(f"❌ Threads қатесі:\n{str(e)[:300]}")
+        finally:
+            ACTIVE_USERS.discard(user_id)
+        return
+
     uid = uuid.uuid4().hex[:8]
     out_template = str(DOWNLOAD_DIR / f"video_{uid}.%(ext)s")
 
@@ -493,11 +817,13 @@ async def download_and_send_video(query, context, url: str, height: int | None) 
     else:
         fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
 
+    loop = asyncio.get_event_loop()
     opts = _base_ydl_opts(url)
     opts.update({
         "format": fmt,
         "outtmpl": out_template,
         "merge_output_format": "mp4",
+        "progress_hooks": [_make_progress_hook(loop, query.message)],
     })
 
     # Алдын ала алынған info болса — format ID қолмен таңдаймыз
@@ -510,7 +836,6 @@ async def download_and_send_video(query, context, url: str, height: int | None) 
         await query.edit_message_text(f"⏳ Format: {fmt_id} (жалпы: {n_formats}), жүктелуде...")
 
     try:
-        loop = asyncio.get_event_loop()
         if stored_info and _is_youtube(url):
             info = await loop.run_in_executor(
                 None, lambda: _ydl_download_from_info(opts, stored_info)
@@ -560,6 +885,8 @@ async def download_and_send_video(query, context, url: str, height: int | None) 
         for f in DOWNLOAD_DIR.glob(f"video_{uid}.*"):
             f.unlink(missing_ok=True)
         await query.edit_message_text(_format_error(str(e), url))
+    finally:
+        ACTIVE_USERS.discard(user_id)
 
 
 # ---------------------------------------------------------------------------
@@ -585,12 +912,27 @@ def _format_error(error: str, url: str = "") -> str:
     is_youtube = any(d in url_lower for d in ("youtube.com", "youtu.be"))
     is_tiktok = "tiktok.com" in url_lower
     is_vk = any(d in url_lower for d in ("vk.com", "vk.ru", "vkvideo.ru"))
+    is_threads = any(d in url_lower for d in ("threads.net", "threads.com"))
+    is_instagram = "instagram.com" in url_lower
     no_cookies = not COOKIES_FILE.exists()
 
-    # YouTube датацентр IP блогы — cookies емес, серверден жүктеу мәселесі
+    # YouTube датацентр IP блогы
     if is_youtube and ("sign in" in err or "bot" in err or "confirm your age" in err
                        or ("login" in err and "cookies" not in err)):
         return "❌ YouTube серверден жүктеуді блоктады. Сілтемені қайта жіберіп көріңіз."
+
+    if is_threads and no_cookies:
+        return "🔐 Threads жүктеу үшін cookies керек.\n\n" + COOKIES_INSTRUCTION
+
+    # Instagram — cookie қажет
+    if is_instagram and (no_cookies or "login" in err or "invalid_post" in err):
+        if no_cookies:
+            return (
+                "🔐 Instagram жүктеу үшін аккаунтқа кіру керек.\n\n"
+                + COOKIES_INSTRUCTION
+            )
+        return "❌ Instagram бұл постты жүктеуге рұқсат бермеді."
+
     if is_tiktok and ("blocked" in err or "ip address" in err):
         if no_cookies:
             return (
@@ -608,7 +950,12 @@ def _format_error(error: str, url: str = "") -> str:
             "🔐 Бұл контент кіруді қажет етеді.\n\n"
             + COOKIES_INSTRUCTION
         )
-    if "unsupported url" in err or "invalid_post" in err:
+    if "invalid_post" in err:
+        return (
+            "🔐 Бұл контент кіруді қажет етеді.\n\n"
+            + COOKIES_INSTRUCTION
+        )
+    if "unsupported url" in err:
         return "❌ Бұл сайт қолдамайды немесе сілтеме дұрыс емес."
     if "copyright" in err or "removed at the request" in err:
         return "⛔ Бұл видео авторлық құқық иесінің сұрауы бойынша жойылған. Жүктеу мүмкін емес."
