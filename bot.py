@@ -190,14 +190,19 @@ def _threads_download(url: str, out_dir: Path) -> tuple[Path, str]:
     video_urls: list[str] = []
     title = clean_url.split("/post/")[-1]
 
+    # Linux/Railway үшін --no-sandbox міндетті
+    launch_args = ["--no-sandbox", "--disable-setuid-sandbox",
+                   "--disable-dev-shm-usage", "--disable-gpu"]
+
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
+        browser = pw.chromium.launch(headless=True, args=launch_args)
         ctx = browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/125.0.0.0 Safari/537.36"
-            )
+            ),
+            locale="en-US",
         )
         if pw_cookies:
             ctx.add_cookies(pw_cookies)
@@ -206,17 +211,43 @@ def _threads_download(url: str, out_dir: Path) -> tuple[Path, str]:
 
         def _on_response(resp):
             ru = resp.url
-            if ".mp4" in ru and "cdninstagram.com" in ru:
+            if ".mp4" in ru and ("cdninstagram.com" in ru or "fbcdn.net" in ru):
                 video_urls.append(ru)
 
         page.on("response", _on_response)
-        page.goto(clean_url, wait_until="networkidle", timeout=30000)
+
+        try:
+            page.goto(clean_url, wait_until="networkidle", timeout=40000)
+        except Exception:
+            # timeout болса да жиналған URL-дерді тексереміз
+            pass
+
+        # Видео элементінің src-ін тікелей алу (fallback)
+        if not video_urls:
+            try:
+                src = page.evaluate("""
+                    () => {
+                        const v = document.querySelector('video');
+                        return v ? v.src || v.currentSrc : null;
+                    }
+                """)
+                if src and "mp4" in src:
+                    video_urls.append(src)
+            except Exception:
+                pass
 
         # OG description → атауы
         try:
             og = page.query_selector('meta[property="og:description"]')
             if og:
                 title = og.get_attribute("content") or title
+        except Exception:
+            pass
+
+        # Debug: бет атауы
+        try:
+            page_title = page.title()
+            logger.info(f"Threads page title: {page_title}")
         except Exception:
             pass
 
