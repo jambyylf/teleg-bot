@@ -830,13 +830,19 @@ async def download_and_send_video(query, context, url: str, height: int | None) 
     uid = uuid.uuid4().hex[:8]
     out_template = str(DOWNLOAD_DIR / f"video_{uid}.%(ext)s")
 
-    # Форматты таңдайды — YouTube-та кең fallback қосамыз
-    if height:
+    # Форматты таңдайды
+    # YouTube cloud client-тары (tv_embedded, android_vr) combined форматтарды береді
+    if _is_youtube(url):
+        if height:
+            fmt = f"best[height<={height}]/best[height<={height*2}]/best"
+        else:
+            fmt = "best"
+    elif height:
         fmt = (f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/"
                f"bestvideo[height<={height}]+bestaudio/"
-               f"best[height<={height}]/bestvideo[height<={height}]/best")
+               f"best[height<={height}]/best")
     else:
-        fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/bestvideo/best"
+        fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
 
     loop = asyncio.get_event_loop()
     opts = _base_ydl_opts(url)
