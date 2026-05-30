@@ -447,22 +447,26 @@ def _ydl_download_with_retry(opts: dict, url: str) -> dict:
 def get_video_info(url: str) -> dict:
     opts = _base_ydl_opts(url)
     opts["skip_download"] = True
+
+    def _extract(o: dict, process: bool = False) -> dict:
+        with yt_dlp.YoutubeDL(o) as ydl:
+            # process=False — форматтарды тексермейді, тек metadata алады
+            info = ydl.extract_info(url, download=False, process=process)
+            # process=False кейде formats жоқ болады — process=True retry
+            if not info:
+                info = ydl.extract_info(url, download=False, process=True)
+            return info
+
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            return ydl.extract_info(url, download=False)
-    except Exception as e:
-        err = str(e).lower()
-        # YouTube датацентр блогы — басқа client-пен retry
-        if _is_youtube(url) and any(k in err for k in ("sign in", "login", "bot", "confirm",
-                                                         "not available", "format")):
-            clients = [["ios"], ["android"], ["tv_embedded"], ["mweb"]] if COOKIES_FILE.exists() \
-                      else [["android_vr"], ["android"], ["ios"], ["mweb"]]
-            for client in clients:
+        return _extract(opts, process=False)
+    except Exception:
+        # YouTube — барлық client-тарды сынайды
+        if _is_youtube(url):
+            for client in [["tv_embedded"], ["android_vr"], ["ios"], ["android"], ["mweb"]]:
                 retry = dict(opts)
                 retry["extractor_args"] = {"youtube": {"player_client": client}}
                 try:
-                    with yt_dlp.YoutubeDL(retry) as ydl:
-                        return ydl.extract_info(url, download=False)
+                    return _extract(retry, process=False)
                 except Exception:
                     continue
         if _is_tiktok(url):
