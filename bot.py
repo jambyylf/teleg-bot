@@ -34,13 +34,19 @@ API_HASH  = os.getenv("API_HASH")
 DOWNLOAD_DIR = Path("downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
-# Railway env var арқылы cookies жүктеу (base64 форматында)
+# Railway env var арқылы cookies жүктеу (base64 + gzip форматында)
 COOKIES_FILE = Path("cookies.txt")
 _cookies_b64 = os.getenv("COOKIES_CONTENT")
 if _cookies_b64:
     try:
-        # Restart болғанда env var-дан қалпына келтіреді
-        COOKIES_FILE.write_bytes(base64.b64decode(_cookies_b64))
+        import gzip as _gzip
+        raw = base64.b64decode(_cookies_b64)
+        # gzip немесе plain text — екеуін де қолдайды
+        try:
+            data = _gzip.decompress(raw)
+        except Exception:
+            data = raw
+        COOKIES_FILE.write_bytes(data)
     except Exception:
         pass
 
@@ -516,24 +522,44 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_getcookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Cookies-ті base64 форматында береді — Railway env var үшін."""
+    """Тек маңызды cookies-ті base64-пен береді — Railway env var үшін."""
+    import io, gzip
+
     if not COOKIES_FILE.exists():
         await update.message.reply_text("❌ cookies.txt жоқ. Алдымен жіберіңіз.")
         return
-    b64 = base64.b64encode(COOKIES_FILE.read_bytes()).decode()
-    text = (
-        "📋 <b>Railway → Variables → COOKIES_CONTENT-ке осыны қойыңыз:</b>\n\n"
-        f"<code>{b64[:200]}...</code>\n\n"
-        "⚠️ Толық мәнді файл ретінде жіберемін..."
+
+    # Тек маңызды домендерді сақтайды
+    KEEP_DOMAINS = (
+        "youtube.com", "ytimg.com", "googlevideo.com", "google.com", "ggpht.com",
+        "tiktok.com", "tiktokv.com", "tiktokcdn.com",
+        "threads.com", "threads.net",
+        "instagram.com", "cdninstagram.com",
+        "facebook.com", "fbcdn.net",
     )
-    await update.message.reply_text(text, parse_mode="HTML")
-    # Файл ретінде жіберу
-    import io
+    lines = COOKIES_FILE.read_text(encoding="utf-8").splitlines()
+    filtered = [l for l in lines if l.startswith("#") or
+                any(d in l for d in KEEP_DOMAINS)]
+    filtered_text = "\n".join(filtered)
+    filtered_bytes = filtered_text.encode("utf-8")
+
+    # Gzip + base64 (кішірейту)
+    compressed = gzip.compress(filtered_bytes, compresslevel=9)
+    b64 = base64.b64encode(compressed).decode()
+
+    orig_kb = len(COOKIES_FILE.read_bytes()) // 1024
+    filt_kb = len(filtered_bytes) // 1024
+    comp_kb = len(b64) // 1024
+
+    await update.message.reply_text(
+        f"📊 Бастапқы: {orig_kb}КБ → Сүзілген: {filt_kb}КБ → Base64: {comp_kb}КБ\n\n"
+        f"{'✅ Railway 32KB лимитіне сияды!' if comp_kb <= 32 else '⚠️ Лимиттен үлкен, бірақ көп кішірейді'}"
+    )
     await context.bot.send_document(
         chat_id=update.effective_chat.id,
         document=io.BytesIO(b64.encode()),
         filename="COOKIES_CONTENT_value.txt",
-        caption="Бұл мәнді Railway → Variables → COOKIES_CONTENT-ке толығымен қойыңыз."
+        caption="Railway → Variables → COOKIES_CONTENT → осы файлдың мазмұнын қойыңыз"
     )
 
 
