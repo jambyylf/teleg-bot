@@ -37,8 +37,9 @@ DOWNLOAD_DIR.mkdir(exist_ok=True)
 # Railway env var арқылы cookies жүктеу (base64 форматында)
 COOKIES_FILE = Path("cookies.txt")
 _cookies_b64 = os.getenv("COOKIES_CONTENT")
-if _cookies_b64 and not COOKIES_FILE.exists():
+if _cookies_b64:
     try:
+        # Restart болғанда env var-дан қалпына келтіреді
         COOKIES_FILE.write_bytes(base64.b64decode(_cookies_b64))
     except Exception:
         pass
@@ -322,7 +323,6 @@ def _base_ydl_opts(url: str = "") -> dict:
         "no_warnings": True,
         "nocheckcertificate": True,
         "legacyserverconnect": True,
-        "check_formats": False,
         "retries": 3,
     }
     if _is_youtube(url):
@@ -512,6 +512,28 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"COOKIES_CONTENT env: {'✅' if env_ok else '❌'}\n"
         f"FFmpeg: {'✅' if ffmpeg_ok else '❌'}\n"
         f"Python path: {COOKIES_FILE.resolve()}"
+    )
+
+
+async def cmd_getcookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Cookies-ті base64 форматында береді — Railway env var үшін."""
+    if not COOKIES_FILE.exists():
+        await update.message.reply_text("❌ cookies.txt жоқ. Алдымен жіберіңіз.")
+        return
+    b64 = base64.b64encode(COOKIES_FILE.read_bytes()).decode()
+    text = (
+        "📋 <b>Railway → Variables → COOKIES_CONTENT-ке осыны қойыңыз:</b>\n\n"
+        f"<code>{b64[:200]}...</code>\n\n"
+        "⚠️ Толық мәнді файл ретінде жіберемін..."
+    )
+    await update.message.reply_text(text, parse_mode="HTML")
+    # Файл ретінде жіберу
+    import io
+    await context.bot.send_document(
+        chat_id=update.effective_chat.id,
+        document=io.BytesIO(b64.encode()),
+        filename="COOKIES_CONTENT_value.txt",
+        caption="Бұл мәнді Railway → Variables → COOKIES_CONTENT-ке толығымен қойыңыз."
     )
 
 
@@ -1257,6 +1279,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("debug", cmd_debug))
     app.add_handler(CommandHandler("setcookies", cmd_setcookies))
+    app.add_handler(CommandHandler("getcookies", cmd_getcookies))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_type_choice, pattern=r"^type:"))
