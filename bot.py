@@ -4,8 +4,12 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import uuid
 from pathlib import Path
+
+# Windows-та .exe, Linux-та жоқ
+_EXE = ".exe" if sys.platform == "win32" else ""
 
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -259,7 +263,7 @@ def _find_ffmpeg() -> str:
         return str(Path(exe).parent)
     winget = Path.home() / "AppData/Local/Microsoft/WinGet/Packages"
     for p in sorted(winget.glob("Gyan.FFmpeg_*/ffmpeg-*/bin"), reverse=True):
-        if (p / "ffmpeg.exe").exists():
+        if (p / f"ffmpeg{_EXE}").exists():
             return str(p)
     return ""
 
@@ -689,7 +693,7 @@ async def download_and_send_audio(query, context, url: str) -> None:
             video_path, title = await loop.run_in_executor(None, _threads_download, url, DOWNLOAD_DIR)
             uid = video_path.stem.split("_")[1]
             # FFmpeg арқылы аудио шығару
-            ffmpeg = Path(FFMPEG_DIR) / "ffmpeg.exe" if FFMPEG_DIR else Path("ffmpeg")
+            ffmpeg = Path(FFMPEG_DIR) / f"ffmpeg{_EXE}" if FFMPEG_DIR else Path("ffmpeg")
             mp3_path = DOWNLOAD_DIR / f"audio_{uid}.mp3"
             subprocess.run([
                 str(ffmpeg), "-y", "-i", str(video_path),
@@ -1026,7 +1030,7 @@ async def _pyro_send_audio(chat_id: int, path: Path, title: str, progress_msg) -
 
 def _get_video_dimensions(path: Path) -> tuple[int, int]:
     """FFprobe арқылы видео ені мен биіктігін қайтарады."""
-    ffprobe = Path(FFMPEG_DIR) / "ffprobe.exe" if FFMPEG_DIR else "ffprobe"
+    ffprobe = Path(FFMPEG_DIR) / f"ffprobe{_EXE}" if FFMPEG_DIR else "ffprobe"
     r = subprocess.run(
         [str(ffprobe), "-v", "error", "-select_streams", "v:0",
          "-show_entries", "stream=width,height",
@@ -1045,8 +1049,8 @@ def _convert_for_telegram(src: Path, uid: str) -> Path:
     Telegram үшін H.264+AAC MP4-ке дайындайды.
     H.264 болса — faststart ғана (секундтар). Басқа кодек болса — ultrafast encode.
     """
-    ffmpeg = Path(FFMPEG_DIR) / "ffmpeg.exe" if FFMPEG_DIR else "ffmpeg"
-    ffprobe = Path(FFMPEG_DIR) / "ffprobe.exe" if FFMPEG_DIR else "ffprobe"
+    ffmpeg = Path(FFMPEG_DIR) / f"ffmpeg{_EXE}" if FFMPEG_DIR else "ffmpeg"
+    ffprobe = Path(FFMPEG_DIR) / f"ffprobe{_EXE}" if FFMPEG_DIR else "ffprobe"
 
     # Видео және аудио кодектерін анықтайды
     probe = subprocess.run(
