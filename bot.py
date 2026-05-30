@@ -334,32 +334,21 @@ def _base_ydl_opts(url: str = "") -> dict:
         opts["socket_timeout"] = 60
         opts["retries"] = 5
     if _is_tiktok(url):
-        if COOKIES_FILE.exists():
-            # Cookies бар кезде — web extractor (браузер cookies жұмыс істейді)
-            opts["http_headers"] = {
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/125.0.0.0 Safari/537.36"
-                ),
-                "Referer": "https://www.tiktok.com/",
+        # Cloud серверлерде web extractor блокталады — mobile API қолданамыз
+        opts["extractor_args"] = {
+            "tiktok": {
+                "api_hostname": ["api16-normal-c-useast1a.tiktokv.com"],
+                "app_name": ["musical_ly"],
+                "app_version": ["35.1.3"],
             }
-        else:
-            # Cookies жоқ кезде — mobile API
-            opts["extractor_args"] = {
-                "tiktok": {
-                    "api_hostname": ["api16-normal-c-useast1a.tiktokv.com"],
-                    "app_name": ["musical_ly"],
-                    "app_version": ["35.1.3"],
-                }
-            }
-            opts["http_headers"] = {
-                "User-Agent": (
-                    "com.zhiliaoapp.musically/2023501030 "
-                    "(Linux; U; Android 13; en_US; Pixel 7; "
-                    "Build/TQ3A.230901.001; Cronet/58.0.2991.0)"
-                )
-            }
+        }
+        opts["http_headers"] = {
+            "User-Agent": (
+                "com.zhiliaoapp.musically/2023501030 "
+                "(Linux; U; Android 13; en_US; Pixel 7; "
+                "Build/TQ3A.230901.001; Cronet/58.0.2991.0)"
+            )
+        }
     # Cookies бар болса — барлық сайтқа қолданамыз (YouTube да кіреді)
     if COOKIES_FILE.exists():
         opts["cookiefile"] = str(COOKIES_FILE)
