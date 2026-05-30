@@ -329,7 +329,6 @@ def _base_ydl_opts(url: str = "") -> dict:
         opts["extractor_args"] = {
             "youtube": {
                 "player_client": ["tv_embedded", "android_vr", "ios", "android", "mweb"],
-                "skip": ["hls", "dash"],
             }
         }
         opts["socket_timeout"] = 60
@@ -842,13 +841,13 @@ async def download_and_send_video(query, context, url: str, height: int | None) 
     uid = uuid.uuid4().hex[:8]
     out_template = str(DOWNLOAD_DIR / f"video_{uid}.%(ext)s")
 
-    # Форматты таңдайды
+    # Форматты таңдайды — YouTube-та кең fallback қосамыз
     if height:
         fmt = (f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/"
                f"bestvideo[height<={height}]+bestaudio/"
-               f"best[height<={height}]/best")
+               f"best[height<={height}]/bestvideo[height<={height}]/best")
     else:
-        fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
+        fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/bestvideo/best"
 
     loop = asyncio.get_event_loop()
     opts = _base_ydl_opts(url)
