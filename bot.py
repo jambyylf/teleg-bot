@@ -420,6 +420,60 @@ def _tiktok_download_playwright(url: str, out_dir: Path) -> tuple[Path, str]:
     return out_path, title[:80]
 
 
+def _tiktok_download_api(url: str, out_dir: Path) -> tuple[Path, str]:
+    """TikTok-ты tikwm.com тегін API арқылы жүктейді (су таңбасыз, кілтсіз).
+    Датацентр IP-де де (Railway) жұмыс істейді — видеоны tikwm сервері алып береді."""
+    import requests
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+    }
+    r = requests.post(
+        "https://www.tikwm.com/api/",
+        data={"url": url, "hd": 1},
+        headers=headers,
+        timeout=60,
+    )
+    r.raise_for_status()
+    j = r.json()
+    if j.get("code") != 0 or not j.get("data"):
+        raise Exception(f"tikwm қатесі: {j.get('msg', 'белгісіз')}")
+    data = j["data"]
+    video_url = data.get("hdplay") or data.get("play") or data.get("wmplay")
+    title = data.get("title") or "TikTok видео"
+    if not video_url:
+        raise Exception("tikwm: видео URL табылмады")
+    if video_url.startswith("/"):
+        video_url = "https://www.tikwm.com" + video_url
+    uid = uuid.uuid4().hex[:8]
+    out_path = out_dir / f"tiktok_{uid}.mp4"
+    vr = requests.get(video_url, headers=headers, timeout=300, stream=True)
+    vr.raise_for_status()
+    with open(out_path, "wb") as f:
+        for chunk in vr.iter_content(chunk_size=1024 * 1024):
+            if chunk:
+                f.write(chunk)
+    if not out_path.exists() or out_path.stat().st_size == 0:
+        raise Exception("tikwm: бос файл жүктелді")
+    return out_path, title[:80]
+
+
+def _tiktok_download(url: str, out_dir: Path) -> tuple[Path, str]:
+    """TikTok жүктеу әдістерін кезекпен сынайды: tikwm API → Playwright браузер."""
+    errors = []
+    for name, fn in (("tikwm", _tiktok_download_api),
+                     ("playwright", _tiktok_download_playwright)):
+        try:
+            path, title = fn(url, out_dir)
+            if path and Path(path).exists() and Path(path).stat().st_size > 0:
+                logger.info(f"TikTok сәтті жүктелді ({name})")
+                return path, title
+        except Exception as e:
+            logger.warning(f"TikTok {name} сәтсіз: {e}")
+            errors.append(f"{name}: {e}")
+    raise Exception("TikTok жүктелмеді. " + " | ".join(errors))
+
+
 # ---------------------------------------------------------------------------
 # FFmpeg жолы
 # ---------------------------------------------------------------------------
@@ -813,9 +867,11 @@ async def handle_type_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await download_and_send_audio(query, context, url)
 
     elif choice == "video":
-        # Threads — тікелей жүктейміз, сапа таңдаусыз
-        if _is_threads(url):
-            await query.edit_message_text("⏳ Threads видеосы жүктелуде...")
+        # Threads/TikTok — сапа тексеруге кірмей бірден жүктейміз.
+        # (TikTok API Railway-де бұғатталады, get_video_info сүрінеді — сондықтан
+        #  бірден download_and_send_video-ға барамыз, ол жерде tikwm/Playwright резерві бар)
+        if _is_threads(url) or _is_tiktok(url):
+            await query.edit_message_text("⏳ Видео жүктелуде, күте тұрыңыз...")
             await download_and_send_video(query, context, url, height=None)
             return
 
@@ -918,6 +974,37 @@ async def download_and_send_audio(query, context, url: str) -> None:
         except Exception as e:
             logger.error(f"Threads audio error: {e}", exc_info=True)
             await query.edit_message_text(f"❌ Threads аудио қатесі:\n{str(e)[:200]}")
+        finally:
+            ACTIVE_USERS.discard(user_id)
+        return
+
+    # TikTok — видеоны tikwm/Playwright арқылы алып, аудио шығарамыз
+    if _is_tiktok(url):
+        try:
+            loop = asyncio.get_event_loop()
+            await query.edit_message_text("⏳ TikTok жүктелуде...")
+            v_path, tt_title = await loop.run_in_executor(None, _tiktok_download, url, DOWNLOAD_DIR)
+            ffmpeg = Path(FFMPEG_DIR) / f"ffmpeg{_EXE}" if FFMPEG_DIR else Path("ffmpeg")
+            uid = v_path.stem.split("_")[1] if "_" in v_path.stem else uuid.uuid4().hex[:8]
+            mp3_path = DOWNLOAD_DIR / f"audio_{uid}.mp3"
+            await query.edit_message_text("⚙️ Аудио шығарылуда...")
+            subprocess.run([
+                str(ffmpeg), "-y", "-i", str(v_path),
+                "-vn", "-acodec", "libmp3lame", "-b:a", "320k", str(mp3_path)
+            ], capture_output=True, check=True)
+            v_path.unlink(missing_ok=True)
+            await query.edit_message_text("📤 Жіберілуде...")
+            with open(mp3_path, "rb") as af:
+                await context.bot.send_audio(
+                    chat_id=query.message.chat_id, audio=af,
+                    title=str(tt_title)[:64], filename=f"{_safe_name(str(tt_title))}.mp3",
+                    read_timeout=600, write_timeout=600, connect_timeout=60,
+                )
+            await query.edit_message_text("✅ Аудио жіберілді!")
+            mp3_path.unlink(missing_ok=True)
+        except Exception as e:
+            logger.error(f"TikTok audio error: {e}", exc_info=True)
+            await query.edit_message_text(f"❌ TikTok аудио жүктелмеді:\n{str(e)[:300]}")
         finally:
             ACTIVE_USERS.discard(user_id)
         return
@@ -1038,6 +1125,40 @@ async def download_and_send_video(query, context, url: str, height: int | None) 
         except Exception as e:
             logger.error(f"Threads video error: {e}", exc_info=True)
             await query.edit_message_text(f"❌ Threads қатесі:\n{str(e)[:300]}")
+        finally:
+            ACTIVE_USERS.discard(user_id)
+        return
+
+    # TikTok — арнайы жол: tikwm API → Playwright резерві (Railway-де де істейді,
+    # yt-dlp мобильді API датацентр IP-де бұғатталады)
+    if _is_tiktok(url):
+        try:
+            loop = asyncio.get_event_loop()
+            await query.edit_message_text("⏳ TikTok жүктелуде...")
+            video_path, title = await loop.run_in_executor(None, _tiktok_download, url, DOWNLOAD_DIR)
+            await query.edit_message_text("⚙️ Telegram үшін өңделуде...")
+            uid = video_path.stem.split("_")[1] if "_" in video_path.stem else uuid.uuid4().hex[:8]
+            video_path = await loop.run_in_executor(None, lambda: _convert_for_telegram(video_path, uid))
+            size_mb = video_path.stat().st_size / (1024 * 1024)
+            vw, vh = _get_video_dimensions(video_path)
+            await query.edit_message_text(f"📤 Жіберілуде... ({size_mb:.0f} МБ)")
+            if size_mb > 50 and API_ID and API_HASH:
+                await _pyro_send_video(query.message.chat_id, video_path, title, query.message, vw, vh)
+            else:
+                with open(video_path, "rb") as f:
+                    await context.bot.send_video(
+                        chat_id=query.message.chat_id, video=f,
+                        caption=f"🎬 {title[:200]}",
+                        filename=f"{_safe_name(title)}.mp4",
+                        supports_streaming=True,
+                        width=vw or None, height=vh or None,
+                        read_timeout=600, write_timeout=600, connect_timeout=60,
+                    )
+            await query.edit_message_text("✅ Видео жіберілді!")
+            video_path.unlink(missing_ok=True)
+        except Exception as e:
+            logger.error(f"TikTok video error: {e}", exc_info=True)
+            await query.edit_message_text(f"❌ TikTok жүктелмеді:\n{str(e)[:300]}")
         finally:
             ACTIVE_USERS.discard(user_id)
         return
