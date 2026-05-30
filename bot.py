@@ -529,17 +529,35 @@ async def cmd_getcookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("❌ cookies.txt жоқ. Алдымен жіберіңіз.")
         return
 
-    # Тек маңызды домендерді сақтайды
+    # Тек ең маңызды cookie аттарын сақтайды (домен емес — атпен сүзеді)
+    KEEP_NAMES = {
+        # YouTube / Google
+        "LOGIN_INFO", "SAPISID", "SSID", "APISID", "HSID", "SID", "NID",
+        "__Secure-1PAPISID", "__Secure-3PAPISID", "__Secure-1PSID", "__Secure-3PSID",
+        "VISITOR_INFO1_LIVE", "YSC", "PREF", "__Secure-YEC", "CONSISTENCY",
+        # TikTok
+        "sessionid", "tt_webid", "tt_chain_token", "ttwid", "msToken",
+        "tt_webid_v2", "odin_tt",
+        # Instagram / Threads / Facebook
+        "csrftoken", "ds_user_id", "ig_did", "mid", "ig_nrcb",
+        "c_user", "xs", "fr", "datr",
+    }
     KEEP_DOMAINS = (
-        "youtube.com", "ytimg.com", "googlevideo.com", "google.com", "ggpht.com",
-        "tiktok.com", "tiktokv.com", "tiktokcdn.com",
-        "threads.com", "threads.net",
-        "instagram.com", "cdninstagram.com",
-        "facebook.com", "fbcdn.net",
+        "youtube.com", "google.com", "tiktok.com",
+        "threads.com", "threads.net", "instagram.com", "facebook.com",
     )
     lines = COOKIES_FILE.read_text(encoding="utf-8").splitlines()
-    filtered = [l for l in lines if l.startswith("#") or
-                any(d in l for d in KEEP_DOMAINS)]
+    filtered = []
+    for l in lines:
+        if l.startswith("#"):
+            filtered.append(l)
+            continue
+        parts = l.split("\t")
+        if len(parts) >= 7:
+            domain = parts[0].lstrip(".")
+            name = parts[5]
+            if any(d in domain for d in KEEP_DOMAINS) and name in KEEP_NAMES:
+                filtered.append(l)
     filtered_text = "\n".join(filtered)
     filtered_bytes = filtered_text.encode("utf-8")
 
