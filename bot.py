@@ -325,16 +325,15 @@ def _base_ydl_opts(url: str = "") -> dict:
         "check_formats": False,
     }
     if _is_youtube(url):
-        if COOKIES_FILE.exists():
-            # ios/android клиенттері сервердан po_token талап етпейді
-            opts["extractor_args"] = {
-                "youtube": {"player_client": ["ios", "android", "tv_embedded"]}
+        # tv_embedded + android_vr cloud серверлерде жақсы жұмыс істейді
+        opts["extractor_args"] = {
+            "youtube": {
+                "player_client": ["tv_embedded", "android_vr", "ios", "android", "mweb"],
+                "skip": ["hls", "dash"],
             }
-        else:
-            opts["extractor_args"] = {
-                "youtube": {"player_client": ["android_vr", "tv_embedded", "android", "ios"]}
-            }
-        opts["socket_timeout"] = 30
+        }
+        opts["socket_timeout"] = 60
+        opts["retries"] = 5
     if _is_tiktok(url):
         if COOKIES_FILE.exists():
             # Cookies бар кезде — web extractor (браузер cookies жұмыс істейді)
@@ -362,9 +361,8 @@ def _base_ydl_opts(url: str = "") -> dict:
                     "Build/TQ3A.230901.001; Cronet/58.0.2991.0)"
                 )
             }
-    # YouTube-ке cookies керек емес (ios client өзі жұмыс істейді)
-    # Cookies тек Instagram/TikTok/Facebook үшін
-    if COOKIES_FILE.exists() and not _is_youtube(url):
+    # Cookies бар болса — барлық сайтқа қолданамыз (YouTube да кіреді)
+    if COOKIES_FILE.exists():
         opts["cookiefile"] = str(COOKIES_FILE)
     return opts
 
@@ -375,14 +373,14 @@ def _ydl_download_with_retry(opts: dict, url: str) -> dict:
         return _ydl_download(opts, url)
     except Exception as first_err:
         err_str = str(first_err).lower()
-        # YouTube блогы — басқа client-пен retry
-        if _is_youtube(url) and any(k in err_str for k in ("sign in", "login", "bot", "confirm",
-                                                             "not available", "format")):
-            clients = [["ios"], ["android"], ["tv_embedded"], ["mweb"]] if COOKIES_FILE.exists() \
-                      else [["android_vr"], ["android"], ["ios"], ["mweb"]]
-            for client in clients:
+        # YouTube блогы — барлық client-тарды кезекпен сынайды
+        if _is_youtube(url):
+            for client in [["tv_embedded"], ["android_vr"], ["mweb"], ["ios"], ["android"],
+                           ["tv_embedded", "mweb"], ["android_vr", "mweb"]]:
                 retry_opts = dict(opts)
-                retry_opts["extractor_args"] = {"youtube": {"player_client": client}}
+                retry_opts["extractor_args"] = {
+                    "youtube": {"player_client": client}
+                }
                 try:
                     return _ydl_download(retry_opts, url)
                 except Exception:
