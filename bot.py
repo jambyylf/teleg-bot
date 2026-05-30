@@ -311,6 +311,115 @@ def _threads_download(url: str, out_dir: Path) -> tuple[Path, str]:
     return out_path, title[:80]
 
 
+def _tiktok_download_playwright(url: str, out_dir: Path) -> tuple[Path, str]:
+    """TikTok видеосын Playwright арқылы жүктейді — мобильді API блокталса қолданылады
+    (Railway датацентр IP-сінде yt-dlp 'status code 0' қайтарады)."""
+    import requests
+    from playwright.sync_api import sync_playwright
+
+    # cookies.txt → Playwright форматы
+    pw_cookies = []
+    if COOKIES_FILE.exists():
+        for line in COOKIES_FILE.read_text(encoding="utf-8").splitlines():
+            if line.startswith("#") or "\t" not in line:
+                continue
+            parts = line.strip().split("\t")
+            if len(parts) >= 7:
+                pw_cookies.append({
+                    "name": parts[5],
+                    "value": parts[6],
+                    "domain": parts[0].lstrip("."),
+                    "path": parts[2],
+                    "secure": parts[3] == "TRUE",
+                })
+
+    clean_url = url.split("?")[0].rstrip("/")
+    video_urls: list[str] = []
+    title = clean_url.split("/video/")[-1].split("/")[0]
+
+    # Linux/Railway үшін --no-sandbox міндетті
+    launch_args = ["--no-sandbox", "--disable-setuid-sandbox",
+                   "--disable-dev-shm-usage", "--disable-gpu"]
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True, args=launch_args)
+        ctx = browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+                "Mobile/15E148 Safari/604.1"
+            ),
+            locale="en-US",
+            viewport={"width": 390, "height": 844},
+        )
+        if pw_cookies:
+            ctx.add_cookies(pw_cookies)
+
+        page = ctx.new_page()
+
+        def _on_response(resp):
+            ru = resp.url
+            if any(cdn in ru for cdn in ("tiktokcdn.com", "tiktok.com")) and \
+               any(ext in ru for ext in (".mp4", "video/mp4", "playAddr")):
+                video_urls.append(ru)
+
+        page.on("response", _on_response)
+
+        try:
+            page.goto(clean_url, wait_until="networkidle", timeout=40000)
+        except Exception:
+            # timeout болса да жиналған URL-дерді тексереміз
+            pass
+
+        # Видео элементінің src-ін тікелей алу (fallback)
+        if not video_urls:
+            try:
+                src = page.evaluate("""
+                    () => {
+                        const v = document.querySelector('video');
+                        return v ? (v.src || v.currentSrc) : null;
+                    }
+                """)
+                if src and src.startswith("http"):
+                    video_urls.append(src)
+            except Exception:
+                pass
+
+        # Бет атауы
+        try:
+            og = page.query_selector('meta[property="og:title"]')
+            if og:
+                title = og.get_attribute("content") or title
+        except Exception:
+            pass
+
+        browser.close()
+
+    if not video_urls:
+        raise Exception("TikTok видео URL табылмады (cookies ескірген болуы мүмкін).")
+
+    # Ең ұзын URL-ді таңдайды (толық сапалы URL)
+    best_url = max(video_urls, key=len)
+
+    uid = uuid.uuid4().hex[:8]
+    out_path = out_dir / f"tiktok_{uid}.mp4"
+    resp = requests.get(
+        best_url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
+            "Referer": "https://www.tiktok.com/",
+        },
+        timeout=300,
+        stream=True,
+    )
+    resp.raise_for_status()
+    with open(out_path, "wb") as f:
+        for chunk in resp.iter_content(chunk_size=1024 * 1024):
+            f.write(chunk)
+
+    return out_path, title[:80]
+
+
 # ---------------------------------------------------------------------------
 # FFmpeg жолы
 # ---------------------------------------------------------------------------
@@ -860,6 +969,32 @@ async def download_and_send_audio(query, context, url: str) -> None:
         mp3_path.unlink(missing_ok=True)
 
     except Exception as e:
+        # TikTok аудио: API блокталса — браузер арқылы видео алып, аудио шығарамыз
+        if _is_tiktok(url):
+            try:
+                await query.edit_message_text("⏳ TikTok браузер арқылы жүктелуде...")
+                v_path, tt_title = await loop.run_in_executor(
+                    None, _tiktok_download_playwright, url, DOWNLOAD_DIR
+                )
+                ffmpeg = Path(FFMPEG_DIR) / f"ffmpeg{_EXE}" if FFMPEG_DIR else Path("ffmpeg")
+                mp3_path = DOWNLOAD_DIR / f"audio_{uid}.mp3"
+                subprocess.run([
+                    str(ffmpeg), "-y", "-i", str(v_path),
+                    "-vn", "-acodec", "libmp3lame", "-b:a", "320k", str(mp3_path)
+                ], capture_output=True, check=True)
+                v_path.unlink(missing_ok=True)
+                await query.edit_message_text("📤 Жіберілуде...")
+                with open(mp3_path, "rb") as af:
+                    await context.bot.send_audio(
+                        chat_id=query.message.chat_id, audio=af,
+                        title=str(tt_title)[:64], filename=f"{_safe_name(str(tt_title))}.mp3",
+                        read_timeout=600, write_timeout=600, connect_timeout=60,
+                    )
+                await query.edit_message_text("✅ Аудио жіберілді!")
+                mp3_path.unlink(missing_ok=True)
+                return
+            except Exception as e2:
+                logger.error(f"TikTok audio fallback error: {e2}", exc_info=True)
         logger.error(f"Audio error: {e}", exc_info=True)
         for f in DOWNLOAD_DIR.glob(f"audio_{uid}.*"):
             f.unlink(missing_ok=True)
@@ -943,20 +1078,41 @@ async def download_and_send_video(query, context, url: str, height: int | None) 
         await query.edit_message_text(f"⏳ Format: {fmt_id} (жалпы: {n_formats}), жүктелуде...")
 
     try:
-        if stored_info and _is_youtube(url):
-            info = await loop.run_in_executor(
-                None, lambda: _ydl_download_from_info(opts, stored_info)
-            )
-        else:
-            info = await loop.run_in_executor(None, lambda: _ydl_download_with_retry(opts, url))
-        title = context.user_data.get("dl_title") or info.get("title") or "video"
+        video_path = None
+        title = context.user_data.get("dl_title") or "video"
 
-        mp4_files = list(DOWNLOAD_DIR.glob(f"video_{uid}.mp4"))
-        found = mp4_files or list(DOWNLOAD_DIR.glob(f"video_{uid}.*"))
-        if not found:
+        # Алдымен yt-dlp арқылы жүктеп көреміз
+        try:
+            if stored_info and _is_youtube(url):
+                info = await loop.run_in_executor(
+                    None, lambda: _ydl_download_from_info(opts, stored_info)
+                )
+            else:
+                info = await loop.run_in_executor(None, lambda: _ydl_download_with_retry(opts, url))
+            title = context.user_data.get("dl_title") or info.get("title") or "video"
+
+            mp4_files = list(DOWNLOAD_DIR.glob(f"video_{uid}.mp4"))
+            found = mp4_files or list(DOWNLOAD_DIR.glob(f"video_{uid}.*"))
+            if found:
+                video_path = found[0]
+        except Exception as dl_err:
+            # TikTok: мобильді API блокталса (Railway) — браузер арқылы көшеміз
+            if _is_tiktok(url):
+                logger.warning(f"TikTok yt-dlp сәтсіз, Playwright қолданамыз: {dl_err}")
+            else:
+                raise
+
+        # TikTok yt-dlp файл бермесе — Playwright резерві
+        if video_path is None and _is_tiktok(url):
+            await query.edit_message_text("⏳ TikTok браузер арқылы жүктелуде...")
+            video_path, tt_title = await loop.run_in_executor(
+                None, _tiktok_download_playwright, url, DOWNLOAD_DIR
+            )
+            title = tt_title or title
+
+        if video_path is None:
             await query.edit_message_text("Видео файл жасалмады. Сілтемені тексеріңіз.")
             return
-        video_path = found[0]
 
         # Telegram-ға үйлесімді H.264+AAC форматына конвертациялайды
         await query.edit_message_text("⚙️ Telegram үшін өңделуде...")
