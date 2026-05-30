@@ -363,13 +363,12 @@ def _base_ydl_opts(url: str = "") -> dict:
         opts["format_sort"] = ["res", "ext:mp4:m4a", "quality", "tbr"]
 
     if _is_tiktok(url):
-        # Бірнеше API hostname-ді қатарлас сынайды
+        # EU West серверінен Singapore endpoint жақсы жауап береді
         opts["extractor_args"] = {
             "tiktok": {
-                "api_hostname": ["api22-normal-c-useast1a.tiktokv.com"],
+                "api_hostname": ["api16-normal-c-alisg.tiktokv.com"],
                 "app_name": ["musical_ly"],
                 "app_version": ["26.1.3"],
-                "device_id": ["7318518857994389254"],
             }
         }
         opts["http_headers"] = {
@@ -407,13 +406,16 @@ def _ydl_download_with_retry(opts: dict, url: str) -> dict:
         # TikTok — барлық hostname + app_name комбинацияларын сынайды
         if _is_tiktok(url):
             tiktok_configs = [
+                # Singapore (EU West-ке жақын)
+                {"api_hostname": ["api19-normal-c-alisg.tiktokv.com"], "app_name": ["musical_ly"], "app_version": ["26.1.3"]},
+                {"api_hostname": ["api22-normal-c-alisg.tiktokv.com"], "app_name": ["musical_ly"], "app_version": ["26.1.3"]},
+                {"api_hostname": ["api16-normal-c-alisg.tiktokv.com"], "app_name": ["musical_ly"], "app_version": ["35.1.3"]},
+                # US East
                 {"api_hostname": ["api16-normal-c-useast1a.tiktokv.com"], "app_name": ["musical_ly"], "app_version": ["26.1.3"]},
                 {"api_hostname": ["api19-normal-c-useast1a.tiktokv.com"], "app_name": ["musical_ly"], "app_version": ["26.1.3"]},
                 {"api_hostname": ["api22-normal-c-useast1a.tiktokv.com"], "app_name": ["musical_ly"], "app_version": ["26.1.3"]},
-                {"api_hostname": ["api-h2.tiktokv.com"], "app_name": ["musical_ly"], "app_version": ["26.1.3"]},
-                {"api_hostname": ["api16-normal-c-alisg.tiktokv.com"], "app_name": ["musical_ly"], "app_version": ["26.1.3"]},
-                {"api_hostname": ["api16-normal-c-useast1a.tiktokv.com"], "app_name": ["trill"], "app_version": ["26.1.3"]},
-                {"api_hostname": ["api22-normal-c-useast1a.tiktokv.com"], "app_name": ["musical_ly"], "app_version": ["35.1.3"]},
+                # trill app
+                {"api_hostname": ["api16-normal-c-alisg.tiktokv.com"], "app_name": ["trill"], "app_version": ["26.1.3"]},
             ]
             for cfg in tiktok_configs:
                 retry_opts = dict(opts)
