@@ -323,23 +323,27 @@ def _base_ydl_opts(url: str = "") -> dict:
         "nocheckcertificate": True,
         "legacyserverconnect": True,
         "check_formats": False,
+        "retries": 3,
     }
     if _is_youtube(url):
-        # tv_embedded + android_vr cloud серверлерде жақсы жұмыс істейді
         opts["extractor_args"] = {
             "youtube": {
-                "player_client": ["tv_embedded", "android_vr", "ios", "android", "mweb"],
+                "player_client": ["tv_embedded", "android_vr", "ios", "android"],
             }
         }
         opts["socket_timeout"] = 60
         opts["retries"] = 5
+        # YouTube форматын кеңейту
+        opts["format_sort"] = ["res", "ext:mp4:m4a", "quality", "tbr"]
+
     if _is_tiktok(url):
-        # Cloud серверлерде web extractor блокталады — mobile API қолданамыз
+        # Бірнеше API hostname-ді қатарлас сынайды
         opts["extractor_args"] = {
             "tiktok": {
-                "api_hostname": ["api16-normal-c-useast1a.tiktokv.com"],
+                "api_hostname": ["api22-normal-c-useast1a.tiktokv.com"],
                 "app_name": ["musical_ly"],
-                "app_version": ["35.1.3"],
+                "app_version": ["26.1.3"],
+                "device_id": ["7318518857994389254"],
             }
         }
         opts["http_headers"] = {
@@ -349,7 +353,8 @@ def _base_ydl_opts(url: str = "") -> dict:
                 "Build/TQ3A.230901.001; Cronet/58.0.2991.0)"
             )
         }
-    # Cookies бар болса — барлық сайтқа қолданамыз (YouTube да кіреді)
+
+    # Cookies бар болса — барлық сайтқа қолданамыз
     if COOKIES_FILE.exists():
         opts["cookiefile"] = str(COOKIES_FILE)
     return opts
@@ -373,13 +378,16 @@ def _ydl_download_with_retry(opts: dict, url: str) -> dict:
                     return _ydl_download(retry_opts, url)
                 except Exception:
                     continue
-        # TikTok — кез келген қатеде басқа hostname/версиямен retry
+        # TikTok — барлық hostname + app_name комбинацияларын сынайды
         if _is_tiktok(url):
             tiktok_configs = [
+                {"api_hostname": ["api16-normal-c-useast1a.tiktokv.com"], "app_name": ["musical_ly"], "app_version": ["26.1.3"]},
                 {"api_hostname": ["api19-normal-c-useast1a.tiktokv.com"], "app_name": ["musical_ly"], "app_version": ["26.1.3"]},
                 {"api_hostname": ["api22-normal-c-useast1a.tiktokv.com"], "app_name": ["musical_ly"], "app_version": ["26.1.3"]},
+                {"api_hostname": ["api-h2.tiktokv.com"], "app_name": ["musical_ly"], "app_version": ["26.1.3"]},
+                {"api_hostname": ["api16-normal-c-alisg.tiktokv.com"], "app_name": ["musical_ly"], "app_version": ["26.1.3"]},
                 {"api_hostname": ["api16-normal-c-useast1a.tiktokv.com"], "app_name": ["trill"], "app_version": ["26.1.3"]},
-                {"api_hostname": ["api19-normal-c-useast1a.tiktokv.com"], "app_name": ["musical_ly"], "app_version": ["35.1.3"]},
+                {"api_hostname": ["api22-normal-c-useast1a.tiktokv.com"], "app_name": ["musical_ly"], "app_version": ["35.1.3"]},
             ]
             for cfg in tiktok_configs:
                 retry_opts = dict(opts)
