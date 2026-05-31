@@ -849,10 +849,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         ],
     ]
 
-    # Instagram — карусель/сторис (бірнеше медиа) үшін бөлек батырма
+    # Instagram — карусель/сторис (бірнеше медиа) үшін бөлек батырма.
+    # get_video_info карусельде "playlist" қайтарып шатастырады — сондықтан
+    # IG-ны Threads сияқты тікелей өңдейміз (get_video_info-сіз).
     if _is_instagram(url):
         keyboard = keyboard + [[InlineKeyboardButton(
             "🖼 Бәрін жүктеу (карусель/сторис)", callback_data="type:instagram")]]
+        await update.message.reply_text(
+            "📸 Instagram посты. Не жүктейміз?\n"
+            "• 🖼 Бәрін жүктеу — барлық фото/видео (карусель)\n"
+            "• 🎬/🎵 — біріншісін видео/аудио",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return
 
     # Threads — yt-dlp қолдамайды, тікелей кнопка көрсетеміз
     if _is_threads(url):
@@ -1574,16 +1583,75 @@ async def download_and_send_trimmed(update: Update, context: ContextTypes.DEFAUL
 # ---------------------------------------------------------------------------
 
 def _instagram_download_all(url: str, uid: str) -> tuple[list, str]:
-    """Instagram посттың/карусельдің барлық медиасын (сурет+видео) жүктейді."""
+    """Instagram посттың/карусельдің барлық медиасын (сурет+видео) жүктейді.
+
+    Фото карусельдерде yt-dlp 'No video formats found' қатесін береді, өйткені
+    видео іздейді. Сондықтан алдымен метадеректі аламыз (жүктемей), содан соң
+    әр элементтің тікелей URL-ін requests арқылы жүктейміз (фото да, видео да)."""
+    import requests
+
     opts = _base_ydl_opts(url)
-    opts.update({
-        "outtmpl": str(DOWNLOAD_DIR / f"ig_{uid}_%(playlist_index)s.%(ext)s"),
-        "noplaylist": False,  # карусельдегі барлық элементті аламыз
-    })
+    opts.update({"skip_download": True, "noplaylist": False})
     with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-    files = sorted(DOWNLOAD_DIR.glob(f"ig_{uid}_*"))
-    return files, (info.get("title") or "Instagram")
+        info = ydl.extract_info(url, download=False)
+
+    entries = info.get("entries")
+    if entries is None:
+        entries = [info]
+    else:
+        entries = [e for e in entries if e]
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                      "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+                      "Mobile/15E148 Safari/604.1",
+    }
+    files = []
+    for i, e in enumerate(entries, 1):
+        media_url = None
+        is_video = False
+
+        # 1) Видео форматын іздейміз
+        for f in (e.get("formats") or []):
+            if f.get("vcodec") not in (None, "none") and f.get("url"):
+                media_url = f["url"]
+                is_video = True
+        # 2) Тікелей url видео ма?
+        if not media_url:
+            u = e.get("url")
+            ext = (e.get("ext") or "").lower()
+            if u and (ext in ("mp4", "mov", "webm") or e.get("vcodec") not in (None, "none")):
+                media_url = u
+                is_video = True
+        # 3) Фото: display_url / thumbnail / url
+        if not media_url:
+            media_url = e.get("display_url")
+            if not media_url:
+                thumbs = e.get("thumbnails") or []
+                if thumbs:
+                    media_url = thumbs[-1].get("url")
+            if not media_url:
+                media_url = e.get("url")
+            is_video = False
+
+        if not media_url:
+            continue
+
+        suffix = ".mp4" if is_video else ".jpg"
+        out = DOWNLOAD_DIR / f"ig_{uid}_{i:02d}{suffix}"
+        try:
+            r = requests.get(media_url, headers=headers, timeout=180, stream=True)
+            r.raise_for_status()
+            with open(out, "wb") as fp:
+                for chunk in r.iter_content(1024 * 1024):
+                    if chunk:
+                        fp.write(chunk)
+            if out.exists() and out.stat().st_size > 0:
+                files.append(out)
+        except Exception as ex:
+            logger.warning(f"IG media {i} жүктеу қатесі: {ex}")
+
+    return sorted(files), (info.get("title") or "Instagram")
 
 
 async def download_and_send_instagram(query, context, url: str) -> None:
