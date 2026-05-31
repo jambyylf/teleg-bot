@@ -38,10 +38,19 @@ API_HASH  = os.getenv("API_HASH")
 DOWNLOAD_DIR = Path("downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
+# Тұрақты деректер қалтасы (Railway Volume).
+# Volume /data-ға қосылса — деректер деплойлар арасында сақталады.
+# Volume жоқ болса — қазіргі қалта (уақытша, деплойда нөлденеді).
+DATA_DIR = Path("/data") if Path("/data").exists() else Path(".")
+try:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    DATA_DIR = Path(".")
+
 # Railway env var арқылы cookies жүктеу
 # COOKIES_CONTENT_1, COOKIES_CONTENT_2, ... форматын қолдайды (үлкен файлдар үшін)
 # немесе COOKIES_CONTENT (бір var, кішкентай файлдар үшін)
-COOKIES_FILE = Path("cookies.txt")
+COOKIES_FILE = DATA_DIR / "cookies.txt"
 
 def _load_cookies_from_env() -> None:
     import gzip as _gz
@@ -1698,7 +1707,7 @@ async def download_and_send_instagram(query, context, url: str) -> None:
 # Жүктеу тарихы
 # ---------------------------------------------------------------------------
 
-HISTORY_FILE = Path("history.json")
+HISTORY_FILE = DATA_DIR / "history.json"
 HISTORY_MAX = 25  # әр қолданушыға сақталатын жазба саны
 
 
@@ -1831,7 +1840,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 # Тіл (i18n)
 # ---------------------------------------------------------------------------
 
-LANG_FILE = Path("langs.json")
+LANG_FILE = DATA_DIR / "langs.json"
 
 TRANSLATIONS = {
     "kk": {
@@ -1925,7 +1934,7 @@ async def handle_lang_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # ---------------------------------------------------------------------------
 
 ADMIN_ID = os.getenv("ADMIN_ID")  # Railway env-да орнатуға болады
-STATS_FILE = Path("stats.json")
+STATS_FILE = DATA_DIR / "stats.json"
 
 
 def _bump_stats(user_id: int, kind: str) -> None:
@@ -1994,7 +2003,7 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
-ADMIN_LOG_FILE = Path("admin_log.json")
+ADMIN_LOG_FILE = DATA_DIR / "admin_log.json"
 ADMIN_LOG_MAX = 300  # жаһандық журналда сақталатын соңғы жазба саны
 
 
