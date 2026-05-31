@@ -845,51 +845,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     url = _clean_url(all_urls[0])
     context.user_data[USER_URL_KEY] = url
     context.user_data.pop("dl_info", None)
+    context.user_data.pop("dl_mode", None)
+    context.user_data.pop("trim_audio", None)
+    context.user_data.pop("awaiting_trim", None)
 
     lang = _get_lang(update.effective_user.id)
-    keyboard = [
-        [
-            InlineKeyboardButton(t("btn_audio", lang), callback_data="type:audio"),
-            InlineKeyboardButton(t("btn_video", lang), callback_data="type:video"),
-        ],
-        [
-            InlineKeyboardButton(t("btn_trim", lang), callback_data="type:trim"),
-            InlineKeyboardButton(t("btn_subs", lang), callback_data="type:subs"),
-        ],
-    ]
 
-    # Instagram — тек видео/Reels қолдаймыз (фото каруселін Instagram сервері
-    # датацентр IP-ге бермейді). get_video_info-сіз тікелей жүктеуге жібереміз.
-    if _is_instagram(url):
-        ig_kb = [
-            [
-                InlineKeyboardButton(t("btn_video", lang), callback_data="type:video"),
-                InlineKeyboardButton(t("btn_audio", lang), callback_data="type:audio"),
-            ],
-            [InlineKeyboardButton(t("btn_trim", lang), callback_data="type:trim")],
-        ]
-        await update.message.reply_text(
-            "📸 Instagram видео/Reels.\n"
-            "ℹ️ Тек видео жүктеледі (фото постарды қолдау жоқ).\n\n"
-            "Не жүктейміз?",
-            reply_markup=InlineKeyboardMarkup(ig_kb),
-        )
-        return
-
-    # Threads — yt-dlp қолдамайды, тікелей кнопка көрсетеміз
-    if _is_threads(url):
-        if not COOKIES_FILE.exists():
-            await update.message.reply_text(
-                "🔐 Threads жүктеу үшін cookies керек.\n\n"
-                "/setcookies командасын жіберіңіз."
-            )
-            return
-        msg = await update.message.reply_text("🧵 Threads посты")
-        await msg.edit_text("🧵 Threads посты\n\nНе жүктегіңіз келеді?",
-                            reply_markup=InlineKeyboardMarkup(keyboard))
-        return
-
-    # Плейлист сілтемесі — арнайы өңдейміз (сілтеме түрі бойынша, get_video_info-сіз)
+    # Плейлист — арнайы мәзір (бүкіл плейлист / тек біреуі)
     if _is_playlist_url(url):
         pl_keyboard = [
             [InlineKeyboardButton("📋 Барлығын жүктеу", callback_data="type:playlist")],
@@ -906,41 +868,49 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    msg = await update.message.reply_text("🔍 Сілтеме тексерілуде...")
-    try:
-        loop = asyncio.get_event_loop()
-        info = await loop.run_in_executor(None, get_video_info, url)
-        context.user_data["dl_info"] = info
-
-        title = info.get("title") or ""
-        channel = info.get("channel") or info.get("uploader") or ""
-        dur_str = _format_duration(info.get("duration"))
-        is_playlist = info.get("_type") == "playlist"
-
-        lines = [f"🎬 <b>{title[:100]}</b>"]
-        meta = []
-        if dur_str:
-            meta.append(f"⏱ {dur_str}")
-        if channel:
-            meta.append(f"📺 {channel[:40]}")
-        if meta:
-            lines.append(" | ".join(meta))
-        if is_playlist:
-            count = len(info.get("entries") or [])
-            lines.append(f"📋 Плейлист: {count} видео")
-            # Плейлисті толық жүктеу батырмасы
-            keyboard = keyboard + [[InlineKeyboardButton(
-                f"📋 Барлығын жүктеу ({count})" if count else "📋 Барлығын жүктеу",
-                callback_data="type:playlist")]]
-
-        await msg.edit_text(
-            "\n".join(lines),
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(keyboard),
+    # Threads — cookies қажет
+    if _is_threads(url) and not COOKIES_FILE.exists():
+        await update.message.reply_text(
+            "🔐 Threads жүктеу үшін cookies керек.\n\n/setcookies командасын жіберіңіз."
         )
-    except Exception as e:
-        logger.warning(f"Preview қатесі: {e}")
-        await msg.edit_text("Не жүктегіңіз келеді?", reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    # Барлық платформа: екі деңгейлі мәзір — Толық жүктеу / Кесіп жүктеу
+    intro = "🔗 Не істейміз?"
+    if _is_instagram(url):
+        intro = ("📸 Instagram видео/Reels.\n"
+                 "ℹ️ Тек видео жүктеледі (фото постарды қолдау жоқ).\n\nНе істейміз?")
+    elif _is_threads(url):
+        intro = "🧵 Threads посты.\n\nНе істейміз?"
+    await update.message.reply_text(intro, reply_markup=_mode_keyboard(lang))
+
+
+def _mode_keyboard(lang: str = "kk") -> InlineKeyboardMarkup:
+    """Бірінші деңгей: Толық жүктеу / Кесіп жүктеу."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📥 Толық жүктеу", callback_data="mode:full")],
+        [InlineKeyboardButton("✂️ Кесіп жүктеу", callback_data="mode:trim")],
+    ])
+
+
+async def handle_mode_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Режим таңдалды (full/trim) → формат батырмаларын (видео/аудио) көрсетеді."""
+    query = update.callback_query
+    await query.answer()
+    mode = query.data.split(":")[1]
+    url = context.user_data.get(USER_URL_KEY)
+    if not url:
+        await query.edit_message_text("Сілтеме табылмады. Қайта жіберіңіз.")
+        return
+    context.user_data["dl_mode"] = mode
+    lang = _get_lang(update.effective_user.id)
+    kb = [[
+        InlineKeyboardButton(t("btn_video", lang), callback_data="type:video"),
+        InlineKeyboardButton(t("btn_audio", lang), callback_data="type:audio"),
+    ]]
+    label = "📥 Толық жүктеу" if mode == "full" else "✂️ Кесіп жүктеу"
+    await query.edit_message_text(
+        f"{label}\n\nНе жүктейміз?", reply_markup=InlineKeyboardMarkup(kb))
 
 
 async def handle_type_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -958,9 +928,10 @@ async def handle_type_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
             _info = context.user_data.get("dl_info") or {}
             _t = _info.get("title") or context.user_data.get(USER_URL_KEY) or "Жүктеу"
             _u = context.user_data.get(USER_URL_KEY) or ""
-        _add_history(update.effective_user.id, _t, choice)
-        _bump_stats(update.effective_user.id, choice)
-        _admin_log(update.effective_user, _t, _u, choice)
+        _kind = "trim" if context.user_data.get("dl_mode") == "trim" and choice in ("audio", "video") else choice
+        _add_history(update.effective_user.id, _t, _kind)
+        _bump_stats(update.effective_user.id, _kind)
+        _admin_log(update.effective_user, _t, _u, _kind)
     except Exception:
         pass
 
@@ -981,6 +952,21 @@ async def handle_type_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.edit_message_text("Сілтеме табылмады. Қайта жіберіңіз.")
         return
 
+    # Кесіп жүктеу режимі: формат таңдалды — енді уақыт аралығын сұраймыз
+    if context.user_data.get("dl_mode") == "trim" and choice in ("audio", "video"):
+        context.user_data["trim_audio"] = (choice == "audio")
+        context.user_data["awaiting_trim"] = True
+        await query.edit_message_text(
+            "✂️ Қай аралықты кесейік?\n\n"
+            "Уақытты былай жіберіңіз: <b>басы-соңы</b>\n"
+            "Мысалы:\n"
+            "• <code>1:20-2:45</code>\n"
+            "• <code>0:30-1:15</code>\n"
+            "• <code>1:02:00-1:05:30</code> (сағат:минут:секунд)",
+            parse_mode="HTML",
+        )
+        return
+
     if choice == "audio":
         await query.edit_message_text("⏳ Аудио жүктелуде, күте тұрыңыз...")
         await download_and_send_audio(query, context, url)
@@ -996,10 +982,6 @@ async def handle_type_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "• <code>1:02:00-1:05:30</code> (сағат:минут:секунд)",
             parse_mode="HTML",
         )
-
-    elif choice == "subs":
-        await query.edit_message_text("📝 Субтитр ізделуде...")
-        await download_and_send_subtitles(query, context, url)
 
     elif choice == "instagram":
         await query.edit_message_text("🖼 Instagram медиасы жүктелуде...")
@@ -1512,12 +1494,13 @@ async def _handle_trim_input(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await update.message.reply_text("⚠️ Соңғы уақыт басынан кейін болуы керек. Қайта жіберіңіз.")
         return
 
-    await download_and_send_trimmed(update, context, url, start, end)
+    audio = context.user_data.get("trim_audio", False)
+    await download_and_send_trimmed(update, context, url, start, end, audio=audio)
 
 
 async def download_and_send_trimmed(update: Update, context: ContextTypes.DEFAULT_TYPE,
-                                    url: str, start: int, end: int) -> None:
-    """Видеоның тек [start, end] аралығын жүктеп жібереді."""
+                                    url: str, start: int, end: int, audio: bool = False) -> None:
+    """Видеоның тек [start, end] аралығын жүктеп жібереді (видео не аудио)."""
     user_id = update.effective_user.id
     if user_id in ACTIVE_USERS:
         await update.message.reply_text("⏳ Алдыңғы жүктеу аяқталмады. Күте тұрыңыз.")
@@ -1562,6 +1545,32 @@ async def download_and_send_trimmed(update: Update, context: ContextTypes.DEFAUL
                 await msg.edit_text("❌ Кесілген файл жасалмады. Сілтемені тексеріңіз.")
                 return
             video_path = found[0]
+
+        # Аудио сұралса — кесілген бөліктен MP3 шығарып жібереміз
+        if audio:
+            ffmpeg = Path(FFMPEG_DIR) / f"ffmpeg{_EXE}" if FFMPEG_DIR else Path("ffmpeg")
+            mp3 = DOWNLOAD_DIR / f"trim_{uid}.mp3"
+            await msg.edit_text("🎵 Аудио шығарылуда...")
+            await loop.run_in_executor(None, lambda: subprocess.run(
+                [str(ffmpeg), "-y", "-i", str(video_path), "-vn",
+                 "-acodec", "libmp3lame", "-b:a", "192k", str(mp3)],
+                capture_output=True, check=True))
+            Path(video_path).unlink(missing_ok=True)
+            size_mb = mp3.stat().st_size / (1024 * 1024)
+            cap = f"✂️🎵 {title[:150]}\n⏱ {_format_duration(start)}–{_format_duration(end)}"
+            await msg.edit_text(f"📤 Жіберілуде... ({size_mb:.0f} МБ)")
+            if size_mb > 50 and API_ID and API_HASH:
+                await _pyro_send_audio(chat_id, mp3, title, msg)
+            else:
+                with open(mp3, "rb") as f:
+                    await context.bot.send_audio(
+                        chat_id=chat_id, audio=f, title=str(title)[:64],
+                        filename=f"{_safe_name(title)}_cut.mp3",
+                        read_timeout=600, write_timeout=600, connect_timeout=60,
+                    )
+            await msg.delete()
+            mp3.unlink(missing_ok=True)
+            return
 
         # Telegram үшін өңдеу
         await msg.edit_text("⚙️ Telegram үшін өңделуде...")
@@ -2723,6 +2732,7 @@ def main() -> None:
     app.add_handler(InlineQueryHandler(inline_query))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(handle_mode_choice, pattern=r"^mode:"))
     app.add_handler(CallbackQueryHandler(handle_type_choice, pattern=r"^type:"))
     app.add_handler(CallbackQueryHandler(handle_quality_choice, pattern=r"^quality:"))
     app.add_handler(CallbackQueryHandler(handle_tiktok_quality, pattern=r"^ttq:"))
