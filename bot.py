@@ -1088,7 +1088,10 @@ async def handle_tiktok_quality(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text("Сілтеме табылмады. Қайта жіберіңіз.")
         return
     context.user_data["tiktok_hd"] = (quality == "hd")
-    await query.edit_message_text("⏳ TikTok жүктелуде...")
+    # Сапаға қарай басқаша мәтін (download_and_send_video дәл сол мәтінді
+    # қайта жазбауы үшін — әйтпесе "Message is not modified" қатесі шығады)
+    await query.edit_message_text(
+        f"⏳ TikTok {'HD' if quality == 'hd' else 'SD'} сапада жүктелуде...")
     await download_and_send_video(query, context, url, height=None)
 
 
