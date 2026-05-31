@@ -792,13 +792,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        "Сәлем! Видео сілтемесін жіберіңіз.\n\n"
-        "Қолдайтын сайттар:\n"
-        "• YouTube • Instagram • TikTok\n"
-        "• Facebook • Threads • Twitter/X\n"
-        "• және тағы 1000+ сайт"
-    )
+    await update.message.reply_text(t("start", _get_lang(update.effective_user.id)))
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -839,14 +833,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data[USER_URL_KEY] = url
     context.user_data.pop("dl_info", None)
 
+    lang = _get_lang(update.effective_user.id)
     keyboard = [
         [
-            InlineKeyboardButton("🎵 Аудио (MP3)", callback_data="type:audio"),
-            InlineKeyboardButton("🎬 Видео (MP4)", callback_data="type:video"),
+            InlineKeyboardButton(t("btn_audio", lang), callback_data="type:audio"),
+            InlineKeyboardButton(t("btn_video", lang), callback_data="type:video"),
         ],
         [
-            InlineKeyboardButton("✂️ Кесіп жүктеу", callback_data="type:trim"),
-            InlineKeyboardButton("📝 Субтитр", callback_data="type:subs"),
+            InlineKeyboardButton(t("btn_trim", lang), callback_data="type:trim"),
+            InlineKeyboardButton(t("btn_subs", lang), callback_data="type:subs"),
         ],
     ]
 
@@ -1711,6 +1706,99 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 # ---------------------------------------------------------------------------
+# Тіл (i18n)
+# ---------------------------------------------------------------------------
+
+LANG_FILE = Path("langs.json")
+
+TRANSLATIONS = {
+    "kk": {
+        "start": ("Сәлем! Видео сілтемесін жіберіңіз.\n\n"
+                  "Қолдайтын сайттар:\n• YouTube • Instagram • TikTok\n"
+                  "• Facebook • Threads • Twitter/X\n• және тағы 1000+ сайт\n\n"
+                  "/language — тілді ауыстыру"),
+        "btn_audio": "🎵 Аудио (MP3)",
+        "btn_video": "🎬 Видео (MP4)",
+        "btn_trim": "✂️ Кесіп жүктеу",
+        "btn_subs": "📝 Субтитр",
+        "choose_lang": "🌐 Тілді таңдаңыз:",
+        "lang_set": "✅ Тіл: Қазақша",
+    },
+    "ru": {
+        "start": ("Привет! Отправьте ссылку на видео.\n\n"
+                  "Поддерживаемые сайты:\n• YouTube • Instagram • TikTok\n"
+                  "• Facebook • Threads • Twitter/X\n• и ещё 1000+ сайтов\n\n"
+                  "/language — сменить язык"),
+        "btn_audio": "🎵 Аудио (MP3)",
+        "btn_video": "🎬 Видео (MP4)",
+        "btn_trim": "✂️ Обрезать",
+        "btn_subs": "📝 Субтитры",
+        "choose_lang": "🌐 Выберите язык:",
+        "lang_set": "✅ Язык: Русский",
+    },
+    "en": {
+        "start": ("Hi! Send a video link.\n\n"
+                  "Supported sites:\n• YouTube • Instagram • TikTok\n"
+                  "• Facebook • Threads • Twitter/X\n• and 1000+ more\n\n"
+                  "/language — change language"),
+        "btn_audio": "🎵 Audio (MP3)",
+        "btn_video": "🎬 Video (MP4)",
+        "btn_trim": "✂️ Trim",
+        "btn_subs": "📝 Subtitles",
+        "choose_lang": "🌐 Choose language:",
+        "lang_set": "✅ Language: English",
+    },
+}
+
+
+def t(key: str, lang: str = "kk") -> str:
+    """Аударманы қайтарады (табылмаса — қазақша, ол да болмаса — кілттің өзі)."""
+    return TRANSLATIONS.get(lang, TRANSLATIONS["kk"]).get(key) or TRANSLATIONS["kk"].get(key, key)
+
+
+def _get_lang(user_id: int) -> str:
+    import json
+    try:
+        if LANG_FILE.exists():
+            return json.loads(LANG_FILE.read_text(encoding="utf-8")).get(str(user_id), "kk")
+    except Exception:
+        pass
+    return "kk"
+
+
+def _set_lang(user_id: int, lang: str) -> None:
+    import json
+    try:
+        data = {}
+        if LANG_FILE.exists():
+            data = json.loads(LANG_FILE.read_text(encoding="utf-8"))
+        data[str(user_id)] = lang
+        LANG_FILE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"lang save: {e}")
+
+
+async def cmd_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/language — тіл таңдау батырмаларын көрсетеді."""
+    lang = _get_lang(update.effective_user.id)
+    kb = [[
+        InlineKeyboardButton("🇰🇿 Қазақша", callback_data="lang:kk"),
+        InlineKeyboardButton("🇷🇺 Русский", callback_data="lang:ru"),
+        InlineKeyboardButton("🇬🇧 English", callback_data="lang:en"),
+    ]]
+    await update.message.reply_text(t("choose_lang", lang), reply_markup=InlineKeyboardMarkup(kb))
+
+
+async def handle_lang_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Тіл таңдау батырмасын өңдейді."""
+    query = update.callback_query
+    await query.answer()
+    lang = query.data.split(":")[1]
+    _set_lang(update.effective_user.id, lang)
+    await query.edit_message_text(t("lang_set", lang))
+
+
+# ---------------------------------------------------------------------------
 # Статистика + админ
 # ---------------------------------------------------------------------------
 
@@ -2426,6 +2514,8 @@ def main() -> None:
     app.add_handler(CommandHandler("history", cmd_history))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("myid", cmd_myid))
+    app.add_handler(CommandHandler("language", cmd_language))
+    app.add_handler(CallbackQueryHandler(handle_lang_choice, pattern=r"^lang:"))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_type_choice, pattern=r"^type:"))
