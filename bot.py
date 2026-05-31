@@ -1173,6 +1173,7 @@ async def download_and_send_audio(query, context, url: str) -> None:
             mp3_path.unlink(missing_ok=True)
         except Exception as e:
             logger.error(f"Threads audio error: {e}", exc_info=True)
+            await _notify_admin_error(context, query.from_user, url, e, "Threads")
             await query.edit_message_text(f"❌ Threads аудио қатесі:\n{str(e)[:200]}")
         finally:
             ACTIVE_USERS.discard(user_id)
@@ -1204,6 +1205,7 @@ async def download_and_send_audio(query, context, url: str) -> None:
             mp3_path.unlink(missing_ok=True)
         except Exception as e:
             logger.error(f"TikTok audio error: {e}", exc_info=True)
+            await _notify_admin_error(context, query.from_user, url, e, "TikTok")
             await query.edit_message_text(f"❌ TikTok аудио жүктелмеді:\n{str(e)[:300]}")
         finally:
             ACTIVE_USERS.discard(user_id)
@@ -1283,6 +1285,7 @@ async def download_and_send_audio(query, context, url: str) -> None:
             except Exception as e2:
                 logger.error(f"TikTok audio fallback error: {e2}", exc_info=True)
         logger.error(f"Audio error: {e}", exc_info=True)
+        await _notify_admin_error(context, query.from_user, url, e, "")
         for f in DOWNLOAD_DIR.glob(f"audio_{uid}.*"):
             f.unlink(missing_ok=True)
         await query.edit_message_text(_format_error(str(e), url))
@@ -1324,6 +1327,7 @@ async def download_and_send_video(query, context, url: str, height: int | None) 
             video_path.unlink(missing_ok=True)
         except Exception as e:
             logger.error(f"Threads video error: {e}", exc_info=True)
+            await _notify_admin_error(context, query.from_user, url, e, "Threads")
             await query.edit_message_text(f"❌ Threads қатесі:\n{str(e)[:300]}")
         finally:
             ACTIVE_USERS.discard(user_id)
@@ -1360,6 +1364,7 @@ async def download_and_send_video(query, context, url: str, height: int | None) 
             video_path.unlink(missing_ok=True)
         except Exception as e:
             logger.error(f"TikTok video error: {e}", exc_info=True)
+            await _notify_admin_error(context, query.from_user, url, e, "TikTok")
             await query.edit_message_text(f"❌ TikTok жүктелмеді:\n{str(e)[:300]}")
         finally:
             ACTIVE_USERS.discard(user_id)
@@ -1468,6 +1473,7 @@ async def download_and_send_video(query, context, url: str, height: int | None) 
 
     except Exception as e:
         logger.error(f"Video error: {e}", exc_info=True)
+        await _notify_admin_error(context, query.from_user, url, e, "")
         for f in DOWNLOAD_DIR.glob(f"video_{uid}.*"):
             f.unlink(missing_ok=True)
         await query.edit_message_text(_format_error(str(e), url))
@@ -1644,6 +1650,7 @@ async def download_and_send_trimmed(update: Update, context: ContextTypes.DEFAUL
 
     except Exception as e:
         logger.error(f"Trim error: {e}", exc_info=True)
+        await _notify_admin_error(context, update.effective_user, url, e, "Trim")
         for f in DOWNLOAD_DIR.glob(f"trim_{uid}.*"):
             f.unlink(missing_ok=True)
         await msg.edit_text(f"❌ Кесу қатесі:\n{str(e)[:300]}")
@@ -1753,6 +1760,7 @@ async def download_and_send_instagram(query, context, url: str) -> None:
         await query.edit_message_text(f"✅ Дайын! {sent}/{len(files)} медиа жіберілді.")
     except Exception as e:
         logger.error(f"Instagram error: {e}", exc_info=True)
+        await _notify_admin_error(context, query.from_user, url, e, "Instagram")
         await query.edit_message_text(f"❌ Instagram қатесі:\n{str(e)[:300]}")
     finally:
         for f in DOWNLOAD_DIR.glob(f"ig_{uid}_*"):
@@ -2255,6 +2263,7 @@ async def download_and_send_batch(query, context, urls: list, audio: bool = Fals
         await context.bot.send_message(chat_id, f"✅ Дайын! {ok_count}/{len(urls)} {kind} жіберілді.")
     except Exception as e:
         logger.error(f"Batch error: {e}", exc_info=True)
+        await _notify_admin_error(context, query.from_user, ", ".join(urls[:3]), e, "Batch")
         await query.edit_message_text(f"❌ Қате: {str(e)[:200]}")
     finally:
         ACTIVE_USERS.discard(user_id)
@@ -3006,6 +3015,25 @@ async def _handle_admin_action(update: Update, context: ContextTypes.DEFAULT_TYP
     else:
         _set_banned(target, False); msg = f"✅ {target} — баннан шығарылды."
     await update.message.reply_text(msg, reply_markup=_admin_keyboard())
+
+
+async def _notify_admin_error(context, user, url, err, platform="") -> None:
+    """Жүктеу сәтсіз болғанда админге хабар жібереді (мен уақытында түзету үшін)."""
+    if not ADMIN_ID:
+        return
+    try:
+        name = ("@" + user.username) if getattr(user, "username", None) else (getattr(user, "first_name", "") or "")
+        await context.bot.send_message(
+            int(ADMIN_ID),
+            "🚨 <b>Жүктеу қатесі</b>\n"
+            f"👤 {name} (id:<code>{user.id}</code>)\n"
+            f"🌐 Платформа: <b>{platform or '?'}</b>\n"
+            f"🔗 {str(url)[:300]}\n"
+            f"⚠️ {str(err)[:400]}",
+            parse_mode="HTML",
+        )
+    except Exception as _e:
+        logger.warning(f"admin notify fail: {_e}")
 
 
 def main() -> None:
