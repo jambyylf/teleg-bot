@@ -519,6 +519,10 @@ def _is_playlist_url(url: str) -> bool:
     return False
 
 
+def _is_instagram(url: str) -> bool:
+    return "instagram.com" in url.lower()
+
+
 def _base_ydl_opts(url: str = "") -> dict:
     opts: dict = {
         "ffmpeg_location": FFMPEG_DIR,
@@ -846,6 +850,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         ],
     ]
 
+    # Instagram — карусель/сторис (бірнеше медиа) үшін бөлек батырма
+    if _is_instagram(url):
+        keyboard = keyboard + [[InlineKeyboardButton(
+            "🖼 Бәрін жүктеу (карусель/сторис)", callback_data="type:instagram")]]
+
     # Threads — yt-dlp қолдамайды, тікелей кнопка көрсетеміз
     if _is_threads(url):
         if not COOKIES_FILE.exists():
@@ -966,6 +975,10 @@ async def handle_type_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
     elif choice == "subs":
         await query.edit_message_text("📝 Субтитр ізделуде...")
         await download_and_send_subtitles(query, context, url)
+
+    elif choice == "instagram":
+        await query.edit_message_text("🖼 Instagram медиасы жүктелуде...")
+        await download_and_send_instagram(query, context, url)
 
     elif choice == "playlist":
         await query.edit_message_text("📋 Плейлист дайындалуда...")
@@ -1550,6 +1563,87 @@ async def download_and_send_trimmed(update: Update, context: ContextTypes.DEFAUL
             f.unlink(missing_ok=True)
         await msg.edit_text(f"❌ Кесу қатесі:\n{str(e)[:300]}")
     finally:
+        ACTIVE_USERS.discard(user_id)
+
+
+# ---------------------------------------------------------------------------
+# Instagram — карусель / сторис (бірнеше медиа)
+# ---------------------------------------------------------------------------
+
+def _instagram_download_all(url: str, uid: str) -> tuple[list, str]:
+    """Instagram посттың/карусельдің барлық медиасын (сурет+видео) жүктейді."""
+    opts = _base_ydl_opts(url)
+    opts.update({
+        "outtmpl": str(DOWNLOAD_DIR / f"ig_{uid}_%(playlist_index)s.%(ext)s"),
+        "noplaylist": False,  # карусельдегі барлық элементті аламыз
+    })
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+    files = sorted(DOWNLOAD_DIR.glob(f"ig_{uid}_*"))
+    return files, (info.get("title") or "Instagram")
+
+
+async def download_and_send_instagram(query, context, url: str) -> None:
+    """Instagram карусель/сторис — барлық сурет пен видеоны жібереді."""
+    user_id = query.from_user.id
+    if user_id in ACTIVE_USERS:
+        await query.edit_message_text("⏳ Алдыңғы жүктеу аяқталмады.")
+        return
+    ACTIVE_USERS.add(user_id)
+    chat_id = query.message.chat_id
+    loop = asyncio.get_event_loop()
+    uid = uuid.uuid4().hex[:8]
+    PHOTO_EXT = {".jpg", ".jpeg", ".png", ".webp"}
+    VIDEO_EXT = {".mp4", ".mov", ".webm", ".mkv"}
+
+    try:
+        files, title = await loop.run_in_executor(None, lambda: _instagram_download_all(url, uid))
+        if not files:
+            await query.edit_message_text(
+                "❌ Медиа табылмады.\n"
+                "Instagram үшін жаңа cookies керек болуы мүмкін (/setcookies)."
+            )
+            return
+
+        await query.edit_message_text(f"📤 {len(files)} медиа жіберілуде...")
+        sent = 0
+        for i, fp in enumerate(files, 1):
+            ext = fp.suffix.lower()
+            try:
+                if ext in PHOTO_EXT:
+                    with open(fp, "rb") as f:
+                        await context.bot.send_photo(
+                            chat_id=chat_id, photo=f,
+                            read_timeout=120, write_timeout=120,
+                        )
+                elif ext in VIDEO_EXT:
+                    conv = await loop.run_in_executor(
+                        None, lambda p=fp, n=i: _convert_for_telegram(p, f"{uid}_{n}"))
+                    vw, vh = _get_video_dimensions(conv)
+                    with open(conv, "rb") as f:
+                        await context.bot.send_video(
+                            chat_id=chat_id, video=f, supports_streaming=True,
+                            width=vw or None, height=vh or None,
+                            read_timeout=600, write_timeout=600, connect_timeout=60,
+                        )
+                    if conv != fp:
+                        conv.unlink(missing_ok=True)
+                else:
+                    with open(fp, "rb") as f:
+                        await context.bot.send_document(chat_id=chat_id, document=f)
+                sent += 1
+            except Exception as e2:
+                logger.error(f"IG item {i} error: {e2}", exc_info=True)
+            finally:
+                fp.unlink(missing_ok=True)
+
+        await query.edit_message_text(f"✅ Дайын! {sent}/{len(files)} медиа жіберілді.")
+    except Exception as e:
+        logger.error(f"Instagram error: {e}", exc_info=True)
+        await query.edit_message_text(f"❌ Instagram қатесі:\n{str(e)[:300]}")
+    finally:
+        for f in DOWNLOAD_DIR.glob(f"ig_{uid}_*"):
+            f.unlink(missing_ok=True)
         ACTIVE_USERS.discard(user_id)
 
 
