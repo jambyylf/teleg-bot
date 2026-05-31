@@ -619,6 +619,33 @@ def _ydl_download_with_retry(opts: dict, url: str) -> dict:
                 except Exception:
                     continue
 
+        # Facebook — "No video formats" болса, әртүрлі URL форматы мен клиентпен retry
+        if "facebook.com" in url.lower() or "fb.watch" in url.lower() or "fb.com" in url.lower():
+            import re as _re
+            # Видео ID тауып, watch URL форматын жасаймыз
+            m = _re.search(r"(?:videos/|/watch/?\?v=|/reel/|fb\.watch/|v=)(\d+)", url)
+            vid = m.group(1) if m else None
+            fb_urls = [url]
+            if vid:
+                fb_urls += [
+                    f"https://www.facebook.com/watch/?v={vid}",
+                    f"https://m.facebook.com/watch/?v={vid}",
+                    f"https://www.facebook.com/reel/{vid}",
+                ]
+            mobile_ua = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                         "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+                         "Mobile/15E148 Safari/604.1")
+            for fu in fb_urls:
+                for ua in (None, mobile_ua):
+                    retry_opts = dict(opts)
+                    retry_opts["format"] = "best/bestvideo+bestaudio"
+                    if ua:
+                        retry_opts["http_headers"] = {"User-Agent": ua}
+                    try:
+                        return _ydl_download(retry_opts, fu)
+                    except Exception:
+                        continue
+
         # Auth/block қатесі болса — cookie немесе басқа параметрлермен retry
         if any(k in err_str for k in ("blocked", "login", "authentication",
                                        "registered", "cookies", "private")):
