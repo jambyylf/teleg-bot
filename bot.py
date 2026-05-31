@@ -918,6 +918,18 @@ async def handle_type_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.answer()
     choice = query.data.split(":")[1]
 
+    # Тарихқа жазу (барлық жүктеу осы жерден өтеді)
+    try:
+        if choice in ("batch", "batchvideo", "batchaudio"):
+            _n = len(context.user_data.get("batch_urls") or [])
+            _t = f"{_n} сілтеме (batch)"
+        else:
+            _info = context.user_data.get("dl_info") or {}
+            _t = _info.get("title") or context.user_data.get(USER_URL_KEY) or "Жүктеу"
+        _add_history(update.effective_user.id, _t, choice)
+    except Exception:
+        pass
+
     # Batch — бірнеше сілтемені кезекпен жүктейміз (URL_KEY тексеруден бұрын)
     if choice in ("batch", "batchvideo", "batchaudio"):
         urls = context.user_data.get("batch_urls") or []
@@ -1539,6 +1551,68 @@ async def download_and_send_trimmed(update: Update, context: ContextTypes.DEFAUL
         await msg.edit_text(f"❌ Кесу қатесі:\n{str(e)[:300]}")
     finally:
         ACTIVE_USERS.discard(user_id)
+
+
+# ---------------------------------------------------------------------------
+# Жүктеу тарихы
+# ---------------------------------------------------------------------------
+
+HISTORY_FILE = Path("history.json")
+HISTORY_MAX = 25  # әр қолданушыға сақталатын жазба саны
+
+
+def _add_history(user_id: int, title: str, kind: str) -> None:
+    """Жүктеу жазбасын history.json-ға қосады (әр қолданушыға соңғы 25-і)."""
+    import json
+    import time as _t
+    try:
+        data = {}
+        if HISTORY_FILE.exists():
+            data = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+        key = str(user_id)
+        lst = data.get(key, [])
+        lst.insert(0, {"title": str(title)[:80], "kind": kind, "ts": int(_t.time())})
+        data[key] = lst[:HISTORY_MAX]
+        HISTORY_FILE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"history save: {e}")
+
+
+def _get_history(user_id: int) -> list:
+    import json
+    try:
+        if HISTORY_FILE.exists():
+            return json.loads(HISTORY_FILE.read_text(encoding="utf-8")).get(str(user_id), [])
+    except Exception:
+        pass
+    return []
+
+
+def _fmt_ts(ts) -> str:
+    from datetime import datetime, timezone, timedelta
+    try:
+        # Алматы уақыты (UTC+5)
+        return datetime.fromtimestamp(int(ts), tz=timezone(timedelta(hours=5))).strftime("%d.%m %H:%M")
+    except Exception:
+        return ""
+
+
+async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/history — қолданушының соңғы жүктеулерін көрсетеді."""
+    hist = _get_history(update.effective_user.id)
+    if not hist:
+        await update.message.reply_text("📭 Әзірге жүктеу тарихы жоқ.")
+        return
+    icons = {
+        "video": "🎬", "audio": "🎵", "trim": "✂️", "subs": "📝",
+        "playlist": "📋", "batch": "📥", "batchvideo": "📥", "batchaudio": "🎶",
+    }
+    lines = ["🕓 Соңғы жүктеулеріңіз:\n"]
+    for i, h in enumerate(hist, 1):
+        ic = icons.get(h.get("kind"), "📦")
+        ts = _fmt_ts(h.get("ts", 0))
+        lines.append(f"{i}. {ic} {h.get('title', '?')} ({ts})")
+    await update.message.reply_text("\n".join(lines))
 
 
 # ---------------------------------------------------------------------------
@@ -2181,6 +2255,7 @@ def main() -> None:
     app.add_handler(CommandHandler("debug", cmd_debug))
     app.add_handler(CommandHandler("setcookies", cmd_setcookies))
     app.add_handler(CommandHandler("getcookies", cmd_getcookies))
+    app.add_handler(CommandHandler("history", cmd_history))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_type_choice, pattern=r"^type:"))
