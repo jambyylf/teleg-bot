@@ -1738,9 +1738,12 @@ def _bump_stats(user_id: int, kind: str) -> None:
 
 
 async def cmd_myid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/myid — қолданушының Telegram ID-ін көрсетеді (ADMIN_ID орнату үшін)."""
+    """/myid — Telegram ID-ін көрсетеді. ADMIN_ID орнатылса — тек админге қолжетімді."""
+    uid = update.effective_user.id
+    if ADMIN_ID and str(uid) != str(ADMIN_ID):
+        return  # басқаларға үндемей өтеміз (команда жоқ сияқты)
     await update.message.reply_text(
-        f"🆔 Сіздің Telegram ID: <code>{update.effective_user.id}</code>\n\n"
+        f"🆔 Сіздің Telegram ID: <code>{uid}</code>\n\n"
         "Админ болу үшін Railway → Variables → <code>ADMIN_ID</code> = осы сан.",
         parse_mode="HTML",
     )
