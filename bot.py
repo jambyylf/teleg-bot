@@ -821,11 +821,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if len(all_urls) > 1:
         cleaned = [_clean_url(u) for u in all_urls]
         context.user_data["batch_urls"] = cleaned
-        kb = [[InlineKeyboardButton(
-            f"📥 Барлығын жүктеу ({len(cleaned)})", callback_data="type:batch")]]
+        kb = [
+            [InlineKeyboardButton(f"📥 Видео — бәрі ({len(cleaned)})", callback_data="type:batchvideo")],
+            [InlineKeyboardButton(f"🎵 Аудио MP3 — бәрі ({len(cleaned)})", callback_data="type:batchaudio")],
+        ]
         await update.message.reply_text(
-            f"🔗 {len(cleaned)} сілтеме табылды.\n"
-            "«Барлығын жүктеу» бассаңыз — бәрін кезекпен видео ретінде жүктеймін.",
+            f"🔗 {len(cleaned)} сілтеме табылды. Не жүктейміз?",
             reply_markup=InlineKeyboardMarkup(kb),
         )
         return
@@ -918,13 +919,14 @@ async def handle_type_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
     choice = query.data.split(":")[1]
 
     # Batch — бірнеше сілтемені кезекпен жүктейміз (URL_KEY тексеруден бұрын)
-    if choice == "batch":
+    if choice in ("batch", "batchvideo", "batchaudio"):
         urls = context.user_data.get("batch_urls") or []
         if not urls:
             await query.edit_message_text("Сілтемелер табылмады. Қайта жіберіңіз.")
             return
+        is_audio = (choice == "batchaudio")
         await query.edit_message_text("📥 Дайындалуда...")
-        await download_and_send_batch(query, context, urls)
+        await download_and_send_batch(query, context, urls, audio=is_audio)
         return
 
     url = context.user_data.get(USER_URL_KEY)
@@ -1563,8 +1565,42 @@ def _fetch_video(url: str, uid: str) -> tuple[Path, str]:
     return found[0], (info.get("title") or "video")
 
 
-async def download_and_send_batch(query, context, urls: list) -> None:
-    """Бірнеше сілтемені кезекпен жүктеп жібереді."""
+def _fetch_audio(url: str, uid: str) -> tuple[Path, str]:
+    """Бір видеоның аудиосын (MP3) платформаға қарай жүктейді. (path, title)."""
+    # TikTok/Threads — видеоны алып, ffmpeg-пен аудио шығарамыз
+    if _is_tiktok(url) or _is_threads(url):
+        vpath, title = (_tiktok_download if _is_tiktok(url) else _threads_download)(url, DOWNLOAD_DIR)
+        ffmpeg = Path(FFMPEG_DIR) / f"ffmpeg{_EXE}" if FFMPEG_DIR else Path("ffmpeg")
+        mp3 = DOWNLOAD_DIR / f"ba_{uid}.mp3"
+        subprocess.run([
+            str(ffmpeg), "-y", "-i", str(vpath),
+            "-vn", "-acodec", "libmp3lame", "-b:a", "192k", str(mp3)
+        ], capture_output=True, check=True)
+        Path(vpath).unlink(missing_ok=True)
+        return mp3, title
+    opts = _base_ydl_opts(url)
+    opts.update({
+        "outtmpl": str(DOWNLOAD_DIR / f"ba_{uid}.%(ext)s"),
+        "format": "bestaudio/best",
+        "noplaylist": True,
+        "postprocessors": [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "192",
+        }],
+    })
+    info = _ydl_download(opts, url)
+    mp3 = DOWNLOAD_DIR / f"ba_{uid}.mp3"
+    if not mp3.exists():
+        found = list(DOWNLOAD_DIR.glob(f"ba_{uid}.*"))
+        if not found:
+            raise Exception("аудио жасалмады")
+        mp3 = found[0]
+    return mp3, (info.get("title") or "audio")
+
+
+async def download_and_send_batch(query, context, urls: list, audio: bool = False) -> None:
+    """Бірнеше сілтемені кезекпен жүктеп жібереді (видео немесе аудио)."""
     user_id = query.from_user.id
     if user_id in ACTIVE_USERS:
         await query.edit_message_text("⏳ Алдыңғы жүктеу аяқталмады.")
@@ -1581,23 +1617,38 @@ async def download_and_send_batch(query, context, urls: list) -> None:
             uid = uuid.uuid4().hex[:8]
             status = await context.bot.send_message(chat_id, f"⬇️ {idx}/{len(urls)} жүктелуде...")
             try:
-                path, title = await loop.run_in_executor(None, lambda u=u, uid=uid: _fetch_video(u, uid))
-                path = await loop.run_in_executor(None, lambda p=path, uid=uid: _convert_for_telegram(p, uid))
-                size_mb = path.stat().st_size / (1024 * 1024)
-                vw, vh = _get_video_dimensions(path)
-                await status.edit_text(f"📤 {idx}/{len(urls)} жіберілуде...")
-                if size_mb > 50 and API_ID and API_HASH:
-                    await _pyro_send_video(chat_id, path, title, status, vw, vh)
+                if audio:
+                    path, title = await loop.run_in_executor(None, lambda u=u, uid=uid: _fetch_audio(u, uid))
+                    size_mb = path.stat().st_size / (1024 * 1024)
+                    await status.edit_text(f"📤 {idx}/{len(urls)} жіберілуде...")
+                    if size_mb > 50 and API_ID and API_HASH:
+                        await _pyro_send_audio(chat_id, path, title, status)
+                    else:
+                        with open(path, "rb") as f:
+                            await context.bot.send_audio(
+                                chat_id=chat_id, audio=f,
+                                title=str(title)[:64],
+                                filename=f"{_safe_name(str(title))}.mp3",
+                                read_timeout=600, write_timeout=600, connect_timeout=60,
+                            )
                 else:
-                    with open(path, "rb") as f:
-                        await context.bot.send_video(
-                            chat_id=chat_id, video=f,
-                            caption=f"🎬 {idx}/{len(urls)}. {title[:180]}",
-                            filename=f"{_safe_name(title)}.mp4",
-                            supports_streaming=True,
-                            width=vw or None, height=vh or None,
-                            read_timeout=600, write_timeout=600, connect_timeout=60,
-                        )
+                    path, title = await loop.run_in_executor(None, lambda u=u, uid=uid: _fetch_video(u, uid))
+                    path = await loop.run_in_executor(None, lambda p=path, uid=uid: _convert_for_telegram(p, uid))
+                    size_mb = path.stat().st_size / (1024 * 1024)
+                    vw, vh = _get_video_dimensions(path)
+                    await status.edit_text(f"📤 {idx}/{len(urls)} жіберілуде...")
+                    if size_mb > 50 and API_ID and API_HASH:
+                        await _pyro_send_video(chat_id, path, title, status, vw, vh)
+                    else:
+                        with open(path, "rb") as f:
+                            await context.bot.send_video(
+                                chat_id=chat_id, video=f,
+                                caption=f"🎬 {idx}/{len(urls)}. {title[:180]}",
+                                filename=f"{_safe_name(title)}.mp4",
+                                supports_streaming=True,
+                                width=vw or None, height=vh or None,
+                                read_timeout=600, write_timeout=600, connect_timeout=60,
+                            )
                 await status.delete()
                 Path(path).unlink(missing_ok=True)
                 ok_count += 1
@@ -1607,10 +1658,11 @@ async def download_and_send_batch(query, context, urls: list) -> None:
                     await status.edit_text(f"⚠️ {idx}/{len(urls)}: қате — {str(e2)[:80]}")
                 except Exception:
                     pass
-                for f in DOWNLOAD_DIR.glob(f"b_{uid}.*"):
+                for f in DOWNLOAD_DIR.glob(f"b*_{uid}.*"):
                     f.unlink(missing_ok=True)
 
-        await context.bot.send_message(chat_id, f"✅ Дайын! {ok_count}/{len(urls)} видео жіберілді.")
+        kind = "аудио" if audio else "видео"
+        await context.bot.send_message(chat_id, f"✅ Дайын! {ok_count}/{len(urls)} {kind} жіберілді.")
     except Exception as e:
         logger.error(f"Batch error: {e}", exc_info=True)
         await query.edit_message_text(f"❌ Қате: {str(e)[:200]}")
