@@ -2197,7 +2197,23 @@ def _userlog_text() -> str:
 
 async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/admin — батырмалы админ панелі (тек админге)."""
-    if not _is_admin(update.effective_user.id):
+    uid = update.effective_user.id
+    if not _is_admin(uid):
+        # Себебін көрсетеміз (үндемей өтудің орнына — диагностика)
+        if not ADMIN_ID:
+            await update.message.reply_text(
+                "⚠️ ADMIN_ID орнатылмаған.\n\n"
+                f"Сіздің ID: <code>{uid}</code>\n"
+                "Railway → Variables → <code>ADMIN_ID</code> = осы санды қойыңыз.",
+                parse_mode="HTML")
+        else:
+            await update.message.reply_text(
+                "⛔ Сіз админ емессіз.\n\n"
+                f"Сіздің ID: <code>{uid}</code>\n"
+                f"Орнатылған ADMIN_ID: <code>{ADMIN_ID}</code>\n\n"
+                "Екеуі бірдей болса — Railway деплойын күтіңіз немесе "
+                "ADMIN_ID-дегі артық бос орынды тексеріңіз.",
+                parse_mode="HTML")
         return
     await update.message.reply_text("🛠 <b>Админ панелі</b>", parse_mode="HTML",
                                     reply_markup=_admin_keyboard())
