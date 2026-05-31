@@ -1594,12 +1594,14 @@ def _instagram_download_all(url: str, uid: str) -> tuple[list, str]:
     opts.update({
         "skip_download": True,
         "noplaylist": False,
-        # Фото постта yt-dlp "No video formats found" деп қателеспеуі үшін:
+        # Фото постта yt-dlp "No video formats found" деп қателеспеуі үшін.
+        # (ignoreerrors қоспаймыз — ол entry-лерді метадерекке дейін кесіп тастайды)
         "ignore_no_formats_error": True,
-        "ignoreerrors": True,
     })
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
+        # entries генератор/lazy болуы мүмкін — толық сөздікке айналдырамыз
+        info = ydl.sanitize_info(info)
     if not info:
         raise Exception("Instagram метадерегі алынбады (cookies ескірген болуы мүмкін)")
 
@@ -1631,9 +1633,20 @@ def _instagram_download_all(url: str, uid: str) -> tuple[list, str]:
             if u and (ext in ("mp4", "mov", "webm") or e.get("vcodec") not in (None, "none")):
                 media_url = u
                 is_video = True
-        # 3) Фото: display_url / thumbnail / url
+        # 3) Фото: display_url / display_resources / thumbnail / formats(сурет) / url
         if not media_url:
             media_url = e.get("display_url")
+            # display_resources — Instagram суреттерінің әртүрлі өлшемдері
+            if not media_url:
+                dr = e.get("display_resources") or []
+                if dr:
+                    media_url = dr[-1].get("src") or dr[-1].get("url")
+            # формат ішіндегі сурет (vcodec=none, бірақ url бар)
+            if not media_url:
+                for f in (e.get("formats") or []):
+                    if f.get("url"):
+                        media_url = f["url"]
+            # ең үлкен thumbnail
             if not media_url:
                 thumbs = e.get("thumbnails") or []
                 if thumbs:
@@ -1659,14 +1672,18 @@ def _instagram_download_all(url: str, uid: str) -> tuple[list, str]:
         except Exception as ex:
             logger.warning(f"IG media {i} жүктеу қатесі: {ex}")
 
-    # Диагностика: медиа табылмаса, info құрылымын қайтарамыз (себебін көру үшін)
+    # Диагностика: медиа табылмаса, бірінші entry-дің НАҚТЫ мазмұнын қайтарамыз
     debug = ""
-    if not files:
-        top_keys = list(info.keys())[:15]
-        n = len(entries)
-        e0keys = list(entries[0].keys())[:18] if entries else []
-        debug = (f"info_keys={top_keys}\nentries={n}\n"
-                 f"first_entry_keys={e0keys}")
+    if not files and entries:
+        import json as _json
+        try:
+            e0 = dict(entries[0])
+            # ұзын/керексіз өрістерді қысқартамыз
+            for k in ("http_headers", "description", "__post_extractor"):
+                e0.pop(k, None)
+            debug = _json.dumps(e0, ensure_ascii=False, default=str)[:1500]
+        except Exception as _ex:
+            debug = f"dump қатесі: {_ex}"
 
     return sorted(files), (info.get("title") or "Instagram"), debug
 
