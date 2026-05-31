@@ -826,7 +826,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             InlineKeyboardButton("🎵 Аудио (MP3)", callback_data="type:audio"),
             InlineKeyboardButton("🎬 Видео (MP4)", callback_data="type:video"),
         ],
-        [InlineKeyboardButton("✂️ Кесіп жүктеу", callback_data="type:trim")],
+        [
+            InlineKeyboardButton("✂️ Кесіп жүктеу", callback_data="type:trim"),
+            InlineKeyboardButton("📝 Субтитр", callback_data="type:subs"),
+        ],
     ]
 
     # Threads — yt-dlp қолдамайды, тікелей кнопка көрсетеміз
@@ -921,6 +924,10 @@ async def handle_type_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "• <code>1:02:00-1:05:30</code> (сағат:минут:секунд)",
             parse_mode="HTML",
         )
+
+    elif choice == "subs":
+        await query.edit_message_text("📝 Субтитр ізделуде...")
+        await download_and_send_subtitles(query, context, url)
 
     elif choice == "playlist":
         await query.edit_message_text("📋 Плейлист дайындалуда...")
@@ -1505,6 +1512,71 @@ async def download_and_send_trimmed(update: Update, context: ContextTypes.DEFAUL
             f.unlink(missing_ok=True)
         await msg.edit_text(f"❌ Кесу қатесі:\n{str(e)[:300]}")
     finally:
+        ACTIVE_USERS.discard(user_id)
+
+
+# ---------------------------------------------------------------------------
+# Субтитр жүктеу
+# ---------------------------------------------------------------------------
+
+async def download_and_send_subtitles(query, context, url: str) -> None:
+    """Видеоның субтитрін (қаз/орыс/ағылшын) .srt файл ретінде жібереді."""
+    user_id = query.from_user.id
+    if user_id in ACTIVE_USERS:
+        await query.edit_message_text("⏳ Алдыңғы жүктеу аяқталмады.")
+        return
+    ACTIVE_USERS.add(user_id)
+    chat_id = query.message.chat_id
+    loop = asyncio.get_event_loop()
+    uid = uuid.uuid4().hex[:8]
+
+    try:
+        def _dl():
+            import yt_dlp
+            o = _base_ydl_opts(url)
+            o.update({
+                "skip_download": True,
+                "writesubtitles": True,        # қолмен жасалған субтитр
+                "writeautomaticsub": True,     # авто-генерация (YouTube)
+                "subtitleslangs": ["kk", "ru", "en"],
+                "subtitlesformat": "srt/vtt/best",
+                "outtmpl": str(DOWNLOAD_DIR / f"sub_{uid}.%(ext)s"),
+                "postprocessors": [{"key": "FFmpegSubtitlesConvertor", "format": "srt"}],
+            })
+            with yt_dlp.YoutubeDL(o) as ydl:
+                info = ydl.extract_info(url, download=True)
+            return info.get("title") or "video"
+
+        title = await loop.run_in_executor(None, _dl)
+
+        subs = sorted(DOWNLOAD_DIR.glob(f"sub_{uid}*.srt"))
+        if not subs:
+            await query.edit_message_text(
+                "❌ Бұл видеода субтитр табылмады.\n"
+                "(Кейбір видеоларда субтитр болмайды.)"
+            )
+            return
+
+        await query.edit_message_text(f"📤 {len(subs)} субтитр жіберілуде...")
+        for sp in subs:
+            # тіл кодын файл атынан аламыз (sub_<uid>.<lang>.srt)
+            lang = sp.stem.split(".")[-1] if "." in sp.stem else "sub"
+            with open(sp, "rb") as f:
+                await context.bot.send_document(
+                    chat_id=chat_id, document=f,
+                    filename=f"{_safe_name(title)}.{lang}.srt",
+                    caption=f"📝 Субтитр ({lang})",
+                    read_timeout=120, write_timeout=120,
+                )
+            sp.unlink(missing_ok=True)
+        await query.edit_message_text("✅ Субтитр жіберілді!")
+
+    except Exception as e:
+        logger.error(f"Subtitle error: {e}", exc_info=True)
+        await query.edit_message_text(f"❌ Субтитр қатесі:\n{str(e)[:300]}")
+    finally:
+        for f in DOWNLOAD_DIR.glob(f"sub_{uid}*"):
+            f.unlink(missing_ok=True)
         ACTIVE_USERS.discard(user_id)
 
 
