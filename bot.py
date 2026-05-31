@@ -936,6 +936,7 @@ async def handle_type_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
             _info = context.user_data.get("dl_info") or {}
             _t = _info.get("title") or context.user_data.get(USER_URL_KEY) or "Жүктеу"
         _add_history(update.effective_user.id, _t, choice)
+        _bump_stats(update.effective_user.id, choice)
     except Exception:
         pass
 
@@ -1710,6 +1711,76 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 # ---------------------------------------------------------------------------
+# Статистика + админ
+# ---------------------------------------------------------------------------
+
+ADMIN_ID = os.getenv("ADMIN_ID")  # Railway env-да орнатуға болады
+STATS_FILE = Path("stats.json")
+
+
+def _bump_stats(user_id: int, kind: str) -> None:
+    """Жүктеу статистикасын stats.json-ға қосады."""
+    import json
+    try:
+        data = {"total": 0, "by_kind": {}, "users": []}
+        if STATS_FILE.exists():
+            data = json.loads(STATS_FILE.read_text(encoding="utf-8"))
+        data["total"] = data.get("total", 0) + 1
+        bk = data.get("by_kind", {})
+        bk[kind] = bk.get(kind, 0) + 1
+        data["by_kind"] = bk
+        users = set(data.get("users", []))
+        users.add(user_id)
+        data["users"] = list(users)
+        STATS_FILE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"stats save: {e}")
+
+
+async def cmd_myid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/myid — қолданушының Telegram ID-ін көрсетеді (ADMIN_ID орнату үшін)."""
+    await update.message.reply_text(
+        f"🆔 Сіздің Telegram ID: <code>{update.effective_user.id}</code>\n\n"
+        "Админ болу үшін Railway → Variables → <code>ADMIN_ID</code> = осы сан.",
+        parse_mode="HTML",
+    )
+
+
+async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/stats — бот статистикасы (тек админге, ADMIN_ID орнатылса)."""
+    import json
+    uid = update.effective_user.id
+    if ADMIN_ID and str(uid) != str(ADMIN_ID):
+        await update.message.reply_text("⛔ Бұл команда тек админге арналған.")
+        return
+    if not STATS_FILE.exists():
+        await update.message.reply_text("📊 Статистика әлі жоқ.")
+        return
+    try:
+        data = json.loads(STATS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        await update.message.reply_text("📊 Статистиканы оқу қатесі.")
+        return
+    icons = {
+        "video": "🎬", "audio": "🎵", "trim": "✂️", "subs": "📝",
+        "playlist": "📋", "batch": "📥", "batchvideo": "📥", "batchaudio": "🎶",
+        "instagram": "🖼",
+    }
+    lines = [
+        "📊 <b>Бот статистикасы</b>\n",
+        f"📥 Барлық жүктеу: <b>{data.get('total', 0)}</b>",
+        f"👥 Қолданушылар: <b>{len(data.get('users', []))}</b>",
+        "\n<b>Түрлері бойынша:</b>",
+    ]
+    bk = data.get("by_kind", {})
+    for k, v in sorted(bk.items(), key=lambda x: -x[1]):
+        lines.append(f"  {icons.get(k, '📦')} {k}: {v}")
+    if not ADMIN_ID:
+        lines.append("\n💡 Тек өзіңізге шектеу үшін Railway-де ADMIN_ID орнатыңыз (/myid).")
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+# ---------------------------------------------------------------------------
 # Batch — бірнеше сілтемені кезекпен жүктеу
 # ---------------------------------------------------------------------------
 
@@ -2350,6 +2421,8 @@ def main() -> None:
     app.add_handler(CommandHandler("setcookies", cmd_setcookies))
     app.add_handler(CommandHandler("getcookies", cmd_getcookies))
     app.add_handler(CommandHandler("history", cmd_history))
+    app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(CommandHandler("myid", cmd_myid))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_type_choice, pattern=r"^type:"))
