@@ -12,12 +12,16 @@ from pathlib import Path
 _EXE = ".exe" if sys.platform == "win32" else ""
 
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup,
+    InlineQueryResultVideo, InlineQueryResultArticle, InputTextMessageContent,
+)
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
+    InlineQueryHandler,
     ContextTypes,
     filters,
 )
@@ -1709,6 +1713,77 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 # ---------------------------------------------------------------------------
+# Inline режим (кез келген чатта @bot сілтеме)
+# ---------------------------------------------------------------------------
+
+def _tiktok_api_info(url: str) -> tuple:
+    """tikwm арқылы TikTok тікелей mp4 URL-ін алады (жүктемей). (video_url, title, cover)."""
+    import requests
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+    }
+    r = requests.post("https://www.tikwm.com/api/", data={"url": url, "hd": 1},
+                      headers=headers, timeout=30)
+    r.raise_for_status()
+    j = r.json()
+    if j.get("code") != 0 or not j.get("data"):
+        raise Exception("tikwm info жоқ")
+    d = j["data"]
+    vu = d.get("hdplay") or d.get("play") or d.get("wmplay")
+    if vu and vu.startswith("/"):
+        vu = "https://www.tikwm.com" + vu
+    cover = d.get("cover") or d.get("origin_cover") or ""
+    if cover and cover.startswith("/"):
+        cover = "https://www.tikwm.com" + cover
+    return vu, (d.get("title") or "TikTok видео"), cover
+
+
+async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Inline сұраныс: @bot <сілтеме>. TikTok-ты тікелей жібереді, басқасы — нұсқау."""
+    q = (update.inline_query.query or "").strip()
+    loop = asyncio.get_event_loop()
+    results = []
+
+    if not q:
+        results = [InlineQueryResultArticle(
+            id="help",
+            title="Видео сілтемесін жазыңыз",
+            description="@bot одан кейін сілтеме (мыс. TikTok)",
+            input_message_content=InputTextMessageContent(
+                "ℹ️ Пайдалану: @bot одан кейін видео сілтемесін жазыңыз."),
+        )]
+        await update.inline_query.answer(results, cache_time=5)
+        return
+
+    if _is_tiktok(q):
+        try:
+            vu, title, cover = await loop.run_in_executor(None, _tiktok_api_info, q)
+            if vu:
+                results = [InlineQueryResultVideo(
+                    id="tt",
+                    video_url=vu,
+                    mime_type="video/mp4",
+                    thumbnail_url=cover or vu,
+                    title=str(title)[:60],
+                    description="TikTok — басып жіберіңіз",
+                )]
+        except Exception as e:
+            logger.warning(f"inline tiktok: {e}")
+
+    if not results:
+        results = [InlineQueryResultArticle(
+            id="open",
+            title="Жүктеу үшін ботты ашыңыз",
+            description="Inline тек TikTok-ты тікелей қолдайды. Басқасын ботқа жіберіңіз.",
+            input_message_content=InputTextMessageContent(
+                f"Бұл сілтемені ботқа жіберіп жүктеңіз:\n{q}"),
+        )]
+
+    await update.inline_query.answer(results, cache_time=10)
+
+
+# ---------------------------------------------------------------------------
 # Тіл (i18n)
 # ---------------------------------------------------------------------------
 
@@ -2592,6 +2667,7 @@ def main() -> None:
     app.add_handler(CommandHandler("myid", cmd_myid))
     app.add_handler(CommandHandler("language", cmd_language))
     app.add_handler(CallbackQueryHandler(handle_lang_choice, pattern=r"^lang:"))
+    app.add_handler(InlineQueryHandler(inline_query))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_type_choice, pattern=r"^type:"))
