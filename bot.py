@@ -805,8 +805,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await _handle_trim_input(update, context, text)
         return
 
-    match = URL_REGEX.search(text)
-    if not match:
+    all_urls = URL_REGEX.findall(text)
+    if not all_urls:
         await update.message.reply_text(
             "Сілтеме табылмады. http:// немесе https:// басталатын сілтеме жіберіңіз."
         )
@@ -817,7 +817,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("⏳ Алдыңғы жүктеу аяқталмады. Күте тұрыңыз.")
         return
 
-    url = _clean_url(match.group(0))
+    # Бірнеше сілтеме (batch) — барлығын кезекпен видео ретінде жүктейміз
+    if len(all_urls) > 1:
+        cleaned = [_clean_url(u) for u in all_urls]
+        context.user_data["batch_urls"] = cleaned
+        kb = [[InlineKeyboardButton(
+            f"📥 Барлығын жүктеу ({len(cleaned)})", callback_data="type:batch")]]
+        await update.message.reply_text(
+            f"🔗 {len(cleaned)} сілтеме табылды.\n"
+            "«Барлығын жүктеу» бассаңыз — бәрін кезекпен видео ретінде жүктеймін.",
+            reply_markup=InlineKeyboardMarkup(kb),
+        )
+        return
+
+    url = _clean_url(all_urls[0])
     context.user_data[USER_URL_KEY] = url
     context.user_data.pop("dl_info", None)
 
@@ -903,6 +916,17 @@ async def handle_type_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     await query.answer()
     choice = query.data.split(":")[1]
+
+    # Batch — бірнеше сілтемені кезекпен жүктейміз (URL_KEY тексеруден бұрын)
+    if choice == "batch":
+        urls = context.user_data.get("batch_urls") or []
+        if not urls:
+            await query.edit_message_text("Сілтемелер табылмады. Қайта жіберіңіз.")
+            return
+        await query.edit_message_text("📥 Дайындалуда...")
+        await download_and_send_batch(query, context, urls)
+        return
+
     url = context.user_data.get(USER_URL_KEY)
 
     if not url:
@@ -1511,6 +1535,85 @@ async def download_and_send_trimmed(update: Update, context: ContextTypes.DEFAUL
         for f in DOWNLOAD_DIR.glob(f"trim_{uid}.*"):
             f.unlink(missing_ok=True)
         await msg.edit_text(f"❌ Кесу қатесі:\n{str(e)[:300]}")
+    finally:
+        ACTIVE_USERS.discard(user_id)
+
+
+# ---------------------------------------------------------------------------
+# Batch — бірнеше сілтемені кезекпен жүктеу
+# ---------------------------------------------------------------------------
+
+def _fetch_video(url: str, uid: str) -> tuple[Path, str]:
+    """Бір видеоны платформаға қарай жүктейді. (path, title) қайтарады."""
+    if _is_tiktok(url):
+        return _tiktok_download(url, DOWNLOAD_DIR)
+    if _is_threads(url):
+        return _threads_download(url, DOWNLOAD_DIR)
+    opts = _base_ydl_opts(url)
+    opts.update({
+        "outtmpl": str(DOWNLOAD_DIR / f"b_{uid}.%(ext)s"),
+        "format": "best" if _is_youtube(url) else "bestvideo+bestaudio/best",
+        "merge_output_format": "mp4",
+        "noplaylist": True,
+    })
+    info = _ydl_download(opts, url)
+    found = list(DOWNLOAD_DIR.glob(f"b_{uid}.mp4")) or list(DOWNLOAD_DIR.glob(f"b_{uid}.*"))
+    if not found:
+        raise Exception("файл жасалмады")
+    return found[0], (info.get("title") or "video")
+
+
+async def download_and_send_batch(query, context, urls: list) -> None:
+    """Бірнеше сілтемені кезекпен жүктеп жібереді."""
+    user_id = query.from_user.id
+    if user_id in ACTIVE_USERS:
+        await query.edit_message_text("⏳ Алдыңғы жүктеу аяқталмады.")
+        return
+    ACTIVE_USERS.add(user_id)
+    chat_id = query.message.chat_id
+    loop = asyncio.get_event_loop()
+
+    urls = urls[:MAX_PLAYLIST]  # шектен асудан қорғау
+    ok_count = 0
+    try:
+        await query.edit_message_text(f"📥 {len(urls)} сілтеме жүктеле бастады...")
+        for idx, u in enumerate(urls, 1):
+            uid = uuid.uuid4().hex[:8]
+            status = await context.bot.send_message(chat_id, f"⬇️ {idx}/{len(urls)} жүктелуде...")
+            try:
+                path, title = await loop.run_in_executor(None, lambda u=u, uid=uid: _fetch_video(u, uid))
+                path = await loop.run_in_executor(None, lambda p=path, uid=uid: _convert_for_telegram(p, uid))
+                size_mb = path.stat().st_size / (1024 * 1024)
+                vw, vh = _get_video_dimensions(path)
+                await status.edit_text(f"📤 {idx}/{len(urls)} жіберілуде...")
+                if size_mb > 50 and API_ID and API_HASH:
+                    await _pyro_send_video(chat_id, path, title, status, vw, vh)
+                else:
+                    with open(path, "rb") as f:
+                        await context.bot.send_video(
+                            chat_id=chat_id, video=f,
+                            caption=f"🎬 {idx}/{len(urls)}. {title[:180]}",
+                            filename=f"{_safe_name(title)}.mp4",
+                            supports_streaming=True,
+                            width=vw or None, height=vh or None,
+                            read_timeout=600, write_timeout=600, connect_timeout=60,
+                        )
+                await status.delete()
+                Path(path).unlink(missing_ok=True)
+                ok_count += 1
+            except Exception as e2:
+                logger.error(f"Batch item {idx} error: {e2}", exc_info=True)
+                try:
+                    await status.edit_text(f"⚠️ {idx}/{len(urls)}: қате — {str(e2)[:80]}")
+                except Exception:
+                    pass
+                for f in DOWNLOAD_DIR.glob(f"b_{uid}.*"):
+                    f.unlink(missing_ok=True)
+
+        await context.bot.send_message(chat_id, f"✅ Дайын! {ok_count}/{len(urls)} видео жіберілді.")
+    except Exception as e:
+        logger.error(f"Batch error: {e}", exc_info=True)
+        await query.edit_message_text(f"❌ Қате: {str(e)[:200]}")
     finally:
         ACTIVE_USERS.discard(user_id)
 
