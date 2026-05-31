@@ -637,14 +637,19 @@ def _ydl_download_with_retry(opts: dict, url: str) -> dict:
                          "Mobile/15E148 Safari/604.1")
             for fu in fb_urls:
                 for ua in (None, mobile_ua):
-                    retry_opts = dict(opts)
-                    retry_opts["format"] = "best/bestvideo+bestaudio"
-                    if ua:
-                        retry_opts["http_headers"] = {"User-Agent": ua}
-                    try:
-                        return _ydl_download(retry_opts, fu)
-                    except Exception:
-                        continue
+                    # cookies-пен де, cookies-сіз де сынаймыз.
+                    # (Бөтен Meta cookies Facebook ашық видеосын "жеке" қылуы мүмкін)
+                    for use_cookies in (False, True):
+                        retry_opts = dict(opts)
+                        retry_opts["format"] = "best/bestvideo+bestaudio"
+                        if ua:
+                            retry_opts["http_headers"] = {"User-Agent": ua}
+                        if not use_cookies:
+                            retry_opts.pop("cookiefile", None)
+                        try:
+                            return _ydl_download(retry_opts, fu)
+                        except Exception:
+                            continue
 
         # Auth/block қатесі болса — cookie немесе басқа параметрлермен retry
         if any(k in err_str for k in ("blocked", "login", "authentication",
