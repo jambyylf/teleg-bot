@@ -1591,9 +1591,17 @@ def _instagram_download_all(url: str, uid: str) -> tuple[list, str]:
     import requests
 
     opts = _base_ydl_opts(url)
-    opts.update({"skip_download": True, "noplaylist": False})
+    opts.update({
+        "skip_download": True,
+        "noplaylist": False,
+        # Фото постта yt-dlp "No video formats found" деп қателеспеуі үшін:
+        "ignore_no_formats_error": True,
+        "ignoreerrors": True,
+    })
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
+    if not info:
+        raise Exception("Instagram метадерегі алынбады (cookies ескірген болуы мүмкін)")
 
     entries = info.get("entries")
     if entries is None:
