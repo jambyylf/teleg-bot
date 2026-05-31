@@ -848,14 +848,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await _handle_admin_action(update, context, text)
         return
 
-    # Трим күтіп тұрмыз ба? Қолданушы уақыт аралығын жіберуі керек (URL емес)
-    if context.user_data.get("awaiting_trim"):
-        await _handle_trim_input(update, context, text)
-        return
-
     # Бұғатталған қолданушыны бірден тоқтатамыз
     if _is_banned(update.effective_user.id):
         await update.message.reply_text("🚫 Сіз бұл ботты қолдана алмайсыз (бұғатталғансыз).")
+        return
+
+    # Трим күтіп тұрмыз ба? Қолданушы уақыт аралығын жіберуі керек (URL емес)
+    if context.user_data.get("awaiting_trim"):
+        await _handle_trim_input(update, context, text)
         return
 
     all_urls = URL_REGEX.findall(text)
@@ -960,11 +960,11 @@ async def handle_type_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.answer()
     choice = query.data.split(":")[1]
 
-    # Лимит / ban тексеру (барлық жүктеу осы хабтан өтеді)
-    uid = update.effective_user.id
-    if not await _gate(query, uid):
+    # Лимит / ban тексеру
+    _uid = update.effective_user.id
+    if not await _gate(query, _uid):
         return
-    _count_download(uid)
+    _count_download(_uid)
 
     # Тарихқа жазу (барлық жүктеу осы жерден өтеді)
     try:
@@ -2132,141 +2132,6 @@ async def cmd_userlog(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 # ---------------------------------------------------------------------------
-# Админ панелі (батырмалы)
-# ---------------------------------------------------------------------------
-
-def _admin_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 Статистика", callback_data="adm:stats")],
-        [InlineKeyboardButton("📋 Жүктеу журналы", callback_data="adm:log")],
-        [
-            InlineKeyboardButton("⭐ Premium беру", callback_data="adm:premium"),
-            InlineKeyboardButton("➖ Premium алу", callback_data="adm:unpremium"),
-        ],
-        [
-            InlineKeyboardButton("🚫 Бан жасау", callback_data="adm:ban"),
-            InlineKeyboardButton("✅ Баннан шығару", callback_data="adm:unban"),
-        ],
-    ])
-
-
-def _stats_text() -> str:
-    import json
-    if not STATS_FILE.exists():
-        return "📊 Статистика әлі жоқ."
-    try:
-        data = json.loads(STATS_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return "📊 Статистиканы оқу қатесі."
-    icons = {"video": "🎬", "audio": "🎵", "trim": "✂️", "playlist": "📋",
-             "batchvideo": "📥", "batchaudio": "🎶", "instagram": "🖼"}
-    users = _load_users()
-    n_premium = sum(1 for r in users.values() if r.get("premium"))
-    n_banned = sum(1 for r in users.values() if r.get("banned"))
-    lines = [
-        "📊 <b>Бот статистикасы</b>\n",
-        f"📥 Барлық жүктеу: <b>{data.get('total', 0)}</b>",
-        f"👥 Қолданушылар: <b>{len(data.get('users', []))}</b>",
-        f"⭐ Premium: <b>{n_premium}</b>   🚫 Бан: <b>{n_banned}</b>",
-        "\n<b>Түрлері бойынша:</b>",
-    ]
-    for k, v in sorted(data.get("by_kind", {}).items(), key=lambda x: -x[1]):
-        lines.append(f"  {icons.get(k, '📦')} {k}: {v}")
-    return "\n".join(lines)
-
-
-def _userlog_text() -> str:
-    import json
-    if not ADMIN_LOG_FILE.exists():
-        return "📋 Журнал бос."
-    try:
-        data = json.loads(ADMIN_LOG_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return "📋 Журналды оқу қатесі."
-    if not data:
-        return "📋 Журнал бос."
-    icons = {"video": "🎬", "audio": "🎵", "trim": "✂️", "playlist": "📋",
-             "batchvideo": "📥", "batchaudio": "🎶", "instagram": "🖼"}
-    out = ["📋 Соңғы жүктеулер (кім → не):\n"]
-    for d in data[:20]:
-        ic = icons.get(d.get("kind"), "📦")
-        out.append(f"{ic} {d.get('name') or '?'} (id:{d.get('uid')})\n"
-                   f"   {d.get('title', '?')}\n   🕓 {_fmt_ts(d.get('ts', 0))}\n")
-    return "\n".join(out)[:4000]
-
-
-async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/admin — батырмалы админ панелі (тек админге)."""
-    uid = update.effective_user.id
-    if not _is_admin(uid):
-        # Себебін көрсетеміз (үндемей өтудің орнына — диагностика)
-        if not ADMIN_ID:
-            await update.message.reply_text(
-                "⚠️ ADMIN_ID орнатылмаған.\n\n"
-                f"Сіздің ID: <code>{uid}</code>\n"
-                "Railway → Variables → <code>ADMIN_ID</code> = осы санды қойыңыз.",
-                parse_mode="HTML")
-        else:
-            await update.message.reply_text(
-                "⛔ Сіз админ емессіз.\n\n"
-                f"Сіздің ID: <code>{uid}</code>\n"
-                f"Орнатылған ADMIN_ID: <code>{ADMIN_ID}</code>\n\n"
-                "Екеуі бірдей болса — Railway деплойын күтіңіз немесе "
-                "ADMIN_ID-дегі артық бос орынды тексеріңіз.",
-                parse_mode="HTML")
-        return
-    await update.message.reply_text("🛠 <b>Админ панелі</b>", parse_mode="HTML",
-                                    reply_markup=_admin_keyboard())
-
-
-async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Админ панелінің батырмаларын өңдейді."""
-    query = update.callback_query
-    await query.answer()
-    if not _is_admin(update.effective_user.id):
-        return
-    action = query.data.split(":")[1]
-    if action == "stats":
-        await query.edit_message_text(_stats_text(), parse_mode="HTML",
-                                      reply_markup=_admin_keyboard())
-    elif action == "log":
-        await query.edit_message_text(_userlog_text(), reply_markup=_admin_keyboard())
-    elif action in ("premium", "unpremium", "ban", "unban"):
-        context.user_data["admin_action"] = action
-        names = {"premium": "⭐ Premium беру", "unpremium": "➖ Premium алу",
-                 "ban": "🚫 Бан жасау", "unban": "✅ Баннан шығару"}
-        await query.edit_message_text(
-            f"{names[action]}\n\nҚолданушының Telegram ID-сін жіберіңіз (сан).\n"
-            "ID-ді /userlog журналынан көруге болады."
-        )
-
-
-async def _handle_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
-    """Админ ID жібергенде premium/ban әрекетін орындайды."""
-    action = context.user_data.pop("admin_action", None)
-    if not action:
-        return
-    text = text.strip()
-    if not text.lstrip("-").isdigit():
-        await update.message.reply_text("⚠️ Дұрыс сан (ID) жіберіңіз.")
-        return
-    target = int(text)
-    if action == "premium":
-        _set_premium(target, True)
-        msg = f"⭐ {target} — енді Premium (шексіз жүктеу)."
-    elif action == "unpremium":
-        _set_premium(target, False)
-        msg = f"➖ {target} — Premium алынды."
-    elif action == "ban":
-        _set_banned(target, True)
-        msg = f"🚫 {target} — бұғатталды."
-    else:  # unban
-        _set_banned(target, False)
-        msg = f"✅ {target} — баннан шығарылды."
-    await update.message.reply_text(msg, reply_markup=_admin_keyboard())
-
-
-# ---------------------------------------------------------------------------
 # Batch — бірнеше сілтемені кезекпен жүктеу
 # ---------------------------------------------------------------------------
 
@@ -2930,6 +2795,219 @@ def _pick_format_id(info: dict, height: int | None) -> str:
 # Main
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Лимит / Premium / Ban
+# ---------------------------------------------------------------------------
+
+USERS_FILE = DATA_DIR / "users.json"
+DAILY_LIMIT = 10  # тегін қолданушыға күндік жүктеу лимиті
+
+
+def _load_users() -> dict:
+    import json
+    try:
+        if USERS_FILE.exists():
+            return json.loads(USERS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _save_users(data: dict) -> None:
+    import json
+    try:
+        USERS_FILE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"users save: {e}")
+
+
+def _is_admin(uid) -> bool:
+    return bool(ADMIN_ID) and str(uid) == str(ADMIN_ID)
+
+
+def _is_premium(uid) -> bool:
+    return bool(_load_users().get(str(uid), {}).get("premium"))
+
+
+def _is_banned(uid) -> bool:
+    return bool(_load_users().get(str(uid), {}).get("banned"))
+
+
+def _set_premium(uid, val: bool) -> None:
+    d = _load_users()
+    r = d.get(str(uid), {})
+    r["premium"] = bool(val)
+    d[str(uid)] = r
+    _save_users(d)
+
+
+def _set_banned(uid, val: bool) -> None:
+    d = _load_users()
+    r = d.get(str(uid), {})
+    r["banned"] = bool(val)
+    d[str(uid)] = r
+    _save_users(d)
+
+
+def _today_str() -> str:
+    from datetime import datetime, timezone, timedelta
+    return datetime.now(timezone(timedelta(hours=5))).strftime("%Y-%m-%d")
+
+
+def _check_limit(uid):
+    if _is_admin(uid) or _is_premium(uid):
+        return True, -1
+    used = _load_users().get(str(uid), {}).get("daily", {}).get(_today_str(), 0)
+    return (used < DAILY_LIMIT), max(0, DAILY_LIMIT - used)
+
+
+def _count_download(uid) -> None:
+    if _is_admin(uid) or _is_premium(uid):
+        return
+    d = _load_users()
+    r = d.get(str(uid), {})
+    day = _today_str()
+    used = r.get("daily", {}).get(day, 0)
+    r["daily"] = {day: used + 1}
+    d[str(uid)] = r
+    _save_users(d)
+
+
+async def _gate(query_or_update, uid) -> bool:
+    say = getattr(query_or_update, "edit_message_text", None) or query_or_update.message.reply_text
+    if _is_banned(uid):
+        await say("🚫 Сіз бұл ботты қолдана алмайсыз (бұғатталғансыз).")
+        return False
+    allowed, remaining = _check_limit(uid)
+    if not allowed:
+        await say(
+            f"⛔ Күндік лимит бітті ({DAILY_LIMIT}/күн).\n\n"
+            "Ертең қайта көріңіз немесе шексіз жүктеу үшін админнен Premium ⭐ сұраңыз."
+        )
+        return False
+    return True
+
+
+def _admin_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Статистика", callback_data="adm:stats")],
+        [InlineKeyboardButton("📋 Жүктеу журналы", callback_data="adm:log")],
+        [
+            InlineKeyboardButton("⭐ Premium беру", callback_data="adm:premium"),
+            InlineKeyboardButton("➖ Premium алу", callback_data="adm:unpremium"),
+        ],
+        [
+            InlineKeyboardButton("🚫 Бан жасау", callback_data="adm:ban"),
+            InlineKeyboardButton("✅ Баннан шығару", callback_data="adm:unban"),
+        ],
+    ])
+
+
+def _stats_text() -> str:
+    import json
+    if not STATS_FILE.exists():
+        return "📊 Статистика әлі жоқ."
+    try:
+        data = json.loads(STATS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return "📊 Статистиканы оқу қатесі."
+    icons = {"video": "🎬", "audio": "🎵", "trim": "✂️", "playlist": "📋",
+             "batchvideo": "📥", "batchaudio": "🎶", "instagram": "🖼"}
+    users = _load_users()
+    n_premium = sum(1 for r in users.values() if r.get("premium"))
+    n_banned = sum(1 for r in users.values() if r.get("banned"))
+    lines = [
+        "📊 <b>Бот статистикасы</b>\n",
+        f"📥 Барлық жүктеу: <b>{data.get('total', 0)}</b>",
+        f"👥 Қолданушылар: <b>{len(data.get('users', []))}</b>",
+        f"⭐ Premium: <b>{n_premium}</b>   🚫 Бан: <b>{n_banned}</b>",
+        "\n<b>Түрлері бойынша:</b>",
+    ]
+    for k, v in sorted(data.get("by_kind", {}).items(), key=lambda x: -x[1]):
+        lines.append(f"  {icons.get(k, '📦')} {k}: {v}")
+    return "\n".join(lines)
+
+
+def _userlog_text() -> str:
+    import json
+    if not ADMIN_LOG_FILE.exists():
+        return "📋 Журнал бос."
+    try:
+        data = json.loads(ADMIN_LOG_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return "📋 Журналды оқу қатесі."
+    if not data:
+        return "📋 Журнал бос."
+    icons = {"video": "🎬", "audio": "🎵", "trim": "✂️", "playlist": "📋",
+             "batchvideo": "📥", "batchaudio": "🎶", "instagram": "🖼"}
+    out = ["📋 Соңғы жүктеулер (кім → не):\n"]
+    for d in data[:20]:
+        ic = icons.get(d.get("kind"), "📦")
+        out.append(f"{ic} {d.get('name') or '?'} (id:{d.get('uid')})\n"
+                   f"   {d.get('title', '?')}\n   🕓 {_fmt_ts(d.get('ts', 0))}\n")
+    return "\n".join(out)[:4000]
+
+
+async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    uid = update.effective_user.id
+    if not _is_admin(uid):
+        if not ADMIN_ID:
+            await update.message.reply_text(
+                "⚠️ ADMIN_ID орнатылмаған.\n\n"
+                f"Сіздің ID: <code>{uid}</code>\n"
+                "Railway → Variables → <code>ADMIN_ID</code> = осы санды қойыңыз.",
+                parse_mode="HTML")
+        else:
+            await update.message.reply_text(
+                "⛔ Сіз админ емессіз.\n\n"
+                f"Сіздің ID: <code>{uid}</code>\n"
+                f"Орнатылған ADMIN_ID: <code>{ADMIN_ID}</code>",
+                parse_mode="HTML")
+        return
+    await update.message.reply_text("🛠 <b>Админ панелі</b>", parse_mode="HTML",
+                                    reply_markup=_admin_keyboard())
+
+
+async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    if not _is_admin(update.effective_user.id):
+        return
+    action = query.data.split(":")[1]
+    if action == "stats":
+        await query.edit_message_text(_stats_text(), parse_mode="HTML",
+                                      reply_markup=_admin_keyboard())
+    elif action == "log":
+        await query.edit_message_text(_userlog_text(), reply_markup=_admin_keyboard())
+    elif action in ("premium", "unpremium", "ban", "unban"):
+        context.user_data["admin_action"] = action
+        names = {"premium": "⭐ Premium беру", "unpremium": "➖ Premium алу",
+                 "ban": "🚫 Бан жасау", "unban": "✅ Баннан шығару"}
+        await query.edit_message_text(
+            f"{names[action]}\n\nҚолданушының Telegram ID-сін жіберіңіз (сан)."
+        )
+
+
+async def _handle_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
+    action = context.user_data.pop("admin_action", None)
+    if not action:
+        return
+    text = text.strip()
+    if not text.lstrip("-").isdigit():
+        await update.message.reply_text("⚠️ Дұрыс сан (ID) жіберіңіз.")
+        return
+    target = int(text)
+    if action == "premium":
+        _set_premium(target, True); msg = f"⭐ {target} — енді Premium (шексіз)."
+    elif action == "unpremium":
+        _set_premium(target, False); msg = f"➖ {target} — Premium алынды."
+    elif action == "ban":
+        _set_banned(target, True); msg = f"🚫 {target} — бұғатталды."
+    else:
+        _set_banned(target, False); msg = f"✅ {target} — баннан шығарылды."
+    await update.message.reply_text(msg, reply_markup=_admin_keyboard())
+
+
 def main() -> None:
     if not BOT_TOKEN:
         raise ValueError("BOT_TOKEN .env файлында жоқ!")
@@ -2955,8 +3033,8 @@ def main() -> None:
     app.add_handler(CommandHandler("myid", cmd_myid))
     app.add_handler(CommandHandler("language", cmd_language))
     app.add_handler(CommandHandler("admin", cmd_admin))
-    app.add_handler(CallbackQueryHandler(handle_lang_choice, pattern=r"^lang:"))
     app.add_handler(CallbackQueryHandler(handle_admin, pattern=r"^adm:"))
+    app.add_handler(CallbackQueryHandler(handle_lang_choice, pattern=r"^lang:"))
     app.add_handler(InlineQueryHandler(inline_query))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
