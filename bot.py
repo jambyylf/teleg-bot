@@ -2897,10 +2897,21 @@ async def _gate(query_or_update, uid) -> bool:
     return True
 
 
-def _admin_keyboard() -> InlineKeyboardMarkup:
+def _admin_home_kb() -> InlineKeyboardMarkup:
+    """Басты экран — бөлімдерге бөлінген әдемі мәзір."""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 Статистика", callback_data="adm:stats")],
-        [InlineKeyboardButton("📋 Жүктеу журналы", callback_data="adm:log")],
+        [
+            InlineKeyboardButton("📊 Статистика", callback_data="adm:stats"),
+            InlineKeyboardButton("📋 Журнал", callback_data="adm:log"),
+        ],
+        [InlineKeyboardButton("👥 Қолданушыларды басқару", callback_data="adm:users")],
+        [InlineKeyboardButton("🔄 Жаңарту", callback_data="adm:home")],
+    ])
+
+
+def _admin_users_kb() -> InlineKeyboardMarkup:
+    """Қолданушыларды басқару бөлімі."""
+    return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("⭐ Premium беру", callback_data="adm:premium"),
             InlineKeyboardButton("➖ Premium алу", callback_data="adm:unpremium"),
@@ -2909,7 +2920,81 @@ def _admin_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🚫 Бан жасау", callback_data="adm:ban"),
             InlineKeyboardButton("✅ Баннан шығару", callback_data="adm:unban"),
         ],
+        [InlineKeyboardButton("⭐ Premium тізімі", callback_data="adm:listprem")],
+        [InlineKeyboardButton("◀️ Артқа", callback_data="adm:home")],
     ])
+
+
+def _back_kb() -> InlineKeyboardMarkup:
+    """Тек «Артқа» батырмасы (ішкі экрандарда)."""
+    return InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Басты мәзір", callback_data="adm:home")]])
+
+
+def _admin_keyboard() -> InlineKeyboardMarkup:
+    # Кері үйлесімділік үшін (ескі шақырулар басты экранды қайтарады)
+    return _admin_home_kb()
+
+
+def _admin_home_text() -> str:
+    """Басты экран — негізгі статистика бірден көрінеді."""
+    import json
+    total = 0
+    n_users = 0
+    if STATS_FILE.exists():
+        try:
+            d = json.loads(STATS_FILE.read_text(encoding="utf-8"))
+            total = d.get("total", 0)
+            n_users = len(d.get("users", []))
+        except Exception:
+            pass
+    users = _load_users()
+    n_premium = sum(1 for r in users.values() if r.get("premium"))
+    n_banned = sum(1 for r in users.values() if r.get("banned"))
+    # Бүгінгі жүктеу саны (admin_log-тан)
+    today = _today_str()
+    today_cnt = 0
+    if ADMIN_LOG_FILE.exists():
+        try:
+            from datetime import datetime, timezone, timedelta
+            log = json.loads(ADMIN_LOG_FILE.read_text(encoding="utf-8"))
+            for r in log:
+                ts = r.get("ts", 0)
+                dstr = datetime.fromtimestamp(int(ts), tz=timezone(timedelta(hours=5))).strftime("%Y-%m-%d")
+                if dstr == today:
+                    today_cnt += 1
+        except Exception:
+            pass
+    return (
+        "🛠 <b>Админ панелі</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        f"📥 Барлық жүктеу:  <b>{total}</b>\n"
+        f"📅 Бүгін:  <b>{today_cnt}</b>\n"
+        f"👥 Қолданушылар:  <b>{n_users}</b>\n"
+        f"⭐ Premium:  <b>{n_premium}</b>\n"
+        f"🚫 Бан:  <b>{n_banned}</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        "Төмендегі бөлімді таңдаңыз 👇"
+    )
+
+
+def _premium_list_text() -> str:
+    """Premium қолданушылар тізімі."""
+    users = _load_users()
+    prem = [uid for uid, r in users.items() if r.get("premium")]
+    banned = [uid for uid, r in users.items() if r.get("banned")]
+    lines = ["⭐ <b>Premium қолданушылар</b>\n"]
+    if prem:
+        for u in prem[:30]:
+            lines.append(f"  ⭐ <code>{u}</code>")
+    else:
+        lines.append("  (әзірге жоқ)")
+    lines.append(f"\n🚫 <b>Бұғатталғандар</b>\n")
+    if banned:
+        for u in banned[:30]:
+            lines.append(f"  🚫 <code>{u}</code>")
+    else:
+        lines.append("  (әзірге жоқ)")
+    return "\n".join(lines)
 
 
 def _stats_text() -> str:
@@ -2973,8 +3058,8 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 f"Орнатылған ADMIN_ID: <code>{ADMIN_ID}</code>",
                 parse_mode="HTML")
         return
-    await update.message.reply_text("🛠 <b>Админ панелі</b>", parse_mode="HTML",
-                                    reply_markup=_admin_keyboard())
+    await update.message.reply_text(_admin_home_text(), parse_mode="HTML",
+                                    reply_markup=_admin_home_kb())
 
 
 async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2983,18 +3068,37 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not _is_admin(update.effective_user.id):
         return
     action = query.data.split(":")[1]
-    if action == "stats":
-        await query.edit_message_text(_stats_text(), parse_mode="HTML",
-                                      reply_markup=_admin_keyboard())
+
+    async def _safe_edit(text, kb):
+        # "Message is not modified" қатесін болдырмаймыз
+        try:
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
+        except Exception:
+            pass
+
+    if action == "home":
+        await _safe_edit(_admin_home_text(), _admin_home_kb())
+    elif action == "stats":
+        await _safe_edit(_stats_text(), _back_kb())
     elif action == "log":
-        await query.edit_message_text(_userlog_text(), reply_markup=_admin_keyboard())
+        await _safe_edit(_userlog_text(), _back_kb())
+    elif action == "users":
+        await _safe_edit(
+            "👥 <b>Қолданушыларды басқару</b>\n\n"
+            "• ⭐ Premium — шексіз жүктеу береді/алады\n"
+            "• 🚫 Бан — ботты қолдануды бұғаттайды\n"
+            "• Тізім — кім premium/бан екенін көрсетеді",
+            _admin_users_kb())
+    elif action == "listprem":
+        await _safe_edit(_premium_list_text(), _admin_users_kb())
     elif action in ("premium", "unpremium", "ban", "unban"):
         context.user_data["admin_action"] = action
         names = {"premium": "⭐ Premium беру", "unpremium": "➖ Premium алу",
                  "ban": "🚫 Бан жасау", "unban": "✅ Баннан шығару"}
-        await query.edit_message_text(
-            f"{names[action]}\n\nҚолданушының Telegram ID-сін жіберіңіз (сан)."
-        )
+        await _safe_edit(
+            f"{names[action]}\n\n👤 Қолданушының Telegram ID-сін жіберіңіз (сан).\n"
+            "ID-ді 📋 Журналдан көруге болады.",
+            _back_kb())
 
 
 async def _handle_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
@@ -3007,14 +3111,14 @@ async def _handle_admin_action(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     target = int(text)
     if action == "premium":
-        _set_premium(target, True); msg = f"⭐ {target} — енді Premium (шексіз)."
+        _set_premium(target, True); msg = f"✅ <code>{target}</code> — енді Premium ⭐ (шексіз жүктеу)."
     elif action == "unpremium":
-        _set_premium(target, False); msg = f"➖ {target} — Premium алынды."
+        _set_premium(target, False); msg = f"✅ <code>{target}</code> — Premium алынды."
     elif action == "ban":
-        _set_banned(target, True); msg = f"🚫 {target} — бұғатталды."
+        _set_banned(target, True); msg = f"✅ <code>{target}</code> — бұғатталды 🚫."
     else:
-        _set_banned(target, False); msg = f"✅ {target} — баннан шығарылды."
-    await update.message.reply_text(msg, reply_markup=_admin_keyboard())
+        _set_banned(target, False); msg = f"✅ <code>{target}</code> — баннан шығарылды."
+    await update.message.reply_text(msg, parse_mode="HTML", reply_markup=_admin_users_kb())
 
 
 async def _notify_admin_error(context, user, url, err, platform="") -> None:
