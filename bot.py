@@ -852,10 +852,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Instagram — тек видео/Reels қолдаймыз (фото каруселін Instagram сервері
     # датацентр IP-ге бермейді). get_video_info-сіз тікелей жүктеуге жібереміз.
     if _is_instagram(url):
-        ig_kb = [[
-            InlineKeyboardButton(t("btn_video", lang), callback_data="type:video"),
-            InlineKeyboardButton(t("btn_audio", lang), callback_data="type:audio"),
-        ]]
+        ig_kb = [
+            [
+                InlineKeyboardButton(t("btn_video", lang), callback_data="type:video"),
+                InlineKeyboardButton(t("btn_audio", lang), callback_data="type:audio"),
+            ],
+            [InlineKeyboardButton(t("btn_trim", lang), callback_data="type:trim")],
+        ]
         await update.message.reply_text(
             "📸 Instagram видео/Reels.\n"
             "ℹ️ Тек видео жүктеледі (фото постарды қолдау жоқ).\n\n"
