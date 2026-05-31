@@ -2557,19 +2557,50 @@ async def _pyro_send_audio(chat_id: int, path: Path, title: str, progress_msg) -
 
 
 def _get_video_dimensions(path: Path) -> tuple[int, int]:
-    """FFprobe арқылы видео ені мен биіктігін қайтарады."""
+    """FFprobe арқылы видеоның НАҚТЫ дисплей өлшемін қайтарады (SAR ескеріледі).
+
+    Кейбір видеоларда (әсіресе Facebook) пиксель квадрат емес (SAR≠1:1).
+    Сонда кодталған ен/биіктік дисплей өлшеміне сәйкес келмей, видео созылып
+    көрінеді. Сондықтан display_aspect_ratio негізінде нақты өлшемді есептейміз."""
     ffprobe = Path(FFMPEG_DIR) / f"ffprobe{_EXE}" if FFMPEG_DIR else "ffprobe"
     r = subprocess.run(
         [str(ffprobe), "-v", "error", "-select_streams", "v:0",
-         "-show_entries", "stream=width,height",
+         "-show_entries", "stream=width,height,sample_aspect_ratio,display_aspect_ratio",
          "-of", "csv=p=0", str(path)],
         capture_output=True, text=True
     )
     try:
-        w, h = r.stdout.strip().split(",")
-        return int(w), int(h)
+        parts = r.stdout.strip().split(",")
+        w, h = int(parts[0]), int(parts[1])
+        sar = parts[2] if len(parts) > 2 else "1:1"
+        # SAR (пиксель пропорциясы) 1:1 болмаса — нақты енін түзетеміз
+        if sar and ":" in sar and sar not in ("1:1", "0:1"):
+            sn, sd = sar.split(":")
+            sn, sd = int(sn), int(sd)
+            if sn > 0 and sd > 0 and sn != sd:
+                w = round(w * sn / sd)
+        return w, h
     except Exception:
         return 0, 0
+
+
+def _needs_sar_fix(path: Path) -> bool:
+    """Видеода SAR≠1:1 ма? (created созылуды болдырмау үшін re-encode керек пе)"""
+    ffprobe = Path(FFMPEG_DIR) / f"ffprobe{_EXE}" if FFMPEG_DIR else "ffprobe"
+    try:
+        r = subprocess.run(
+            [str(ffprobe), "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=sample_aspect_ratio",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            capture_output=True, text=True
+        )
+        sar = r.stdout.strip()
+        if sar and ":" in sar and sar not in ("1:1", "0:1", "N/A"):
+            sn, sd = sar.split(":")
+            return int(sn) != int(sd)
+    except Exception:
+        pass
+    return False
 
 
 def _convert_for_telegram(src: Path, uid: str) -> Path:
@@ -2599,10 +2630,22 @@ def _convert_for_telegram(src: Path, uid: str) -> Path:
 
     is_h264 = vcodec in ("h264", "avc", "avc1")
     is_aac  = acodec in ("aac", "mp4a")
+    sar_fix = _needs_sar_fix(src)  # SAR≠1:1 → созылуды түзету керек
 
     out = DOWNLOAD_DIR / f"video_{uid}_tg.mp4"
 
-    if is_h264 and is_aac:
+    if sar_fix:
+        # Пиксель квадрат емес — нақты дисплей өлшеміне scale + setsar=1
+        # (видео copy жасай алмаймыз, re-encode керек)
+        cmd = [
+            str(ffmpeg), "-y", "-i", str(src),
+            "-vf", "scale=trunc(iw*sar/2)*2:trunc(ih/2)*2,setsar=1",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+            "-c:a", "aac", "-b:a", "192k",
+            "-movflags", "+faststart",
+            str(out)
+        ]
+    elif is_h264 and is_aac:
         # Ең жылдам — тек контейнер + faststart, кодтамайды
         cmd = [
             str(ffmpeg), "-y", "-i", str(src),
