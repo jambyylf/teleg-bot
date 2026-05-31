@@ -849,17 +849,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         ],
     ]
 
-    # Instagram — карусель/сторис (бірнеше медиа) үшін бөлек батырма.
-    # get_video_info карусельде "playlist" қайтарып шатастырады — сондықтан
-    # IG-ны Threads сияқты тікелей өңдейміз (get_video_info-сіз).
+    # Instagram — тек видео/Reels қолдаймыз (фото каруселін Instagram сервері
+    # датацентр IP-ге бермейді). get_video_info-сіз тікелей жүктеуге жібереміз.
     if _is_instagram(url):
-        keyboard = keyboard + [[InlineKeyboardButton(
-            "🖼 Бәрін жүктеу (карусель/сторис)", callback_data="type:instagram")]]
+        ig_kb = [[
+            InlineKeyboardButton(t("btn_video", lang), callback_data="type:video"),
+            InlineKeyboardButton(t("btn_audio", lang), callback_data="type:audio"),
+        ]]
         await update.message.reply_text(
-            "📸 Instagram посты. Не жүктейміз?\n"
-            "• 🖼 Бәрін жүктеу — барлық фото/видео (карусель)\n"
-            "• 🎬/🎵 — біріншісін видео/аудио",
-            reply_markup=InlineKeyboardMarkup(keyboard),
+            "📸 Instagram видео/Reels.\n"
+            "ℹ️ Тек видео жүктеледі (фото постарды қолдау жоқ).\n\n"
+            "Не жүктейміз?",
+            reply_markup=InlineKeyboardMarkup(ig_kb),
         )
         return
 
