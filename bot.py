@@ -785,6 +785,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text.strip()
+
+    # Трим күтіп тұрмыз ба? Қолданушы уақыт аралығын жіберуі керек (URL емес)
+    if context.user_data.get("awaiting_trim"):
+        await _handle_trim_input(update, context, text)
+        return
+
     match = URL_REGEX.search(text)
     if not match:
         await update.message.reply_text(
@@ -801,10 +807,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data[USER_URL_KEY] = url
     context.user_data.pop("dl_info", None)
 
-    keyboard = [[
-        InlineKeyboardButton("🎵 Аудио (MP3)", callback_data="type:audio"),
-        InlineKeyboardButton("🎬 Видео (MP4)", callback_data="type:video"),
-    ]]
+    keyboard = [
+        [
+            InlineKeyboardButton("🎵 Аудио (MP3)", callback_data="type:audio"),
+            InlineKeyboardButton("🎬 Видео (MP4)", callback_data="type:video"),
+        ],
+        [InlineKeyboardButton("✂️ Кесіп жүктеу", callback_data="type:trim")],
+    ]
 
     # Threads — yt-dlp қолдамайды, тікелей кнопка көрсетеміз
     if _is_threads(url):
@@ -865,6 +874,18 @@ async def handle_type_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if choice == "audio":
         await query.edit_message_text("⏳ Аудио жүктелуде, күте тұрыңыз...")
         await download_and_send_audio(query, context, url)
+
+    elif choice == "trim":
+        context.user_data["awaiting_trim"] = True
+        await query.edit_message_text(
+            "✂️ Қай аралықты кесейік?\n\n"
+            "Уақытты былай жіберіңіз: <b>басы-соңы</b>\n"
+            "Мысалы:\n"
+            "• <code>1:20-2:45</code>\n"
+            "• <code>0:30-1:15</code>\n"
+            "• <code>1:02:00-1:05:30</code> (сағат:минут:секунд)",
+            parse_mode="HTML",
+        )
 
     elif choice == "video":
         # Threads/TikTok — сапа тексеруге кірмей бірден жүктейміз.
@@ -1269,6 +1290,155 @@ async def download_and_send_video(query, context, url: str, height: int | None) 
         for f in DOWNLOAD_DIR.glob(f"video_{uid}.*"):
             f.unlink(missing_ok=True)
         await query.edit_message_text(_format_error(str(e), url))
+    finally:
+        ACTIVE_USERS.discard(user_id)
+
+
+# ---------------------------------------------------------------------------
+# Видеоны кесу (трим)
+# ---------------------------------------------------------------------------
+
+def _parse_timestamp(s: str) -> int | None:
+    """'1:20' / '1:02:03' / '90' → секунд."""
+    s = s.strip()
+    if not s:
+        return None
+    try:
+        bits = [int(b) for b in s.split(":")]
+    except ValueError:
+        return None
+    if len(bits) == 1:
+        return bits[0]
+    if len(bits) == 2:
+        return bits[0] * 60 + bits[1]
+    if len(bits) == 3:
+        return bits[0] * 3600 + bits[1] * 60 + bits[2]
+    return None
+
+
+def _parse_time_range(text: str) -> tuple[int, int] | None:
+    """'1:20-2:45' / '1:20 - 2:45' / '1:20 to 2:45' → (start_sec, end_sec)."""
+    parts = re.split(r"\s*(?:-|–|—|to|до)\s*", text.strip())
+    parts = [p for p in parts if p.strip()]
+    if len(parts) != 2:
+        return None
+    s = _parse_timestamp(parts[0])
+    e = _parse_timestamp(parts[1])
+    if s is None or e is None:
+        return None
+    return s, e
+
+
+def _ffmpeg_cut(src: Path, out: Path, start: int, end: int) -> None:
+    """Видеоны start-end аралығымен кеседі (H.264/AAC)."""
+    ffmpeg = Path(FFMPEG_DIR) / f"ffmpeg{_EXE}" if FFMPEG_DIR else Path("ffmpeg")
+    subprocess.run([
+        str(ffmpeg), "-y", "-ss", str(start), "-to", str(end), "-i", str(src),
+        "-c:v", "libx264", "-c:a", "aac", "-movflags", "+faststart", str(out),
+    ], capture_output=True, check=True)
+
+
+async def _handle_trim_input(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
+    """Қолданушы жіберген уақыт аралығын өңдейді."""
+    context.user_data["awaiting_trim"] = False
+    url = context.user_data.get(USER_URL_KEY)
+    if not url:
+        await update.message.reply_text("Сілтеме табылмады. Видео сілтемесін қайта жіберіңіз.")
+        return
+
+    rng = _parse_time_range(text)
+    if not rng:
+        context.user_data["awaiting_trim"] = True
+        await update.message.reply_text(
+            "⚠️ Уақыт форматы дұрыс емес. Қайтадан жіберіңіз.\n"
+            "Мысалы: 1:20-2:45"
+        )
+        return
+
+    start, end = rng
+    if end <= start:
+        context.user_data["awaiting_trim"] = True
+        await update.message.reply_text("⚠️ Соңғы уақыт басынан кейін болуы керек. Қайта жіберіңіз.")
+        return
+
+    await download_and_send_trimmed(update, context, url, start, end)
+
+
+async def download_and_send_trimmed(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                                    url: str, start: int, end: int) -> None:
+    """Видеоның тек [start, end] аралығын жүктеп жібереді."""
+    user_id = update.effective_user.id
+    if user_id in ACTIVE_USERS:
+        await update.message.reply_text("⏳ Алдыңғы жүктеу аяқталмады. Күте тұрыңыз.")
+        return
+    ACTIVE_USERS.add(user_id)
+
+    chat_id = update.effective_chat.id
+    msg = await update.message.reply_text(
+        f"✂️ {_format_duration(start)}–{_format_duration(end)} аралығы жүктелуде..."
+    )
+    loop = asyncio.get_event_loop()
+    uid = uuid.uuid4().hex[:8]
+
+    try:
+        # TikTok/Threads — толық жүктеп, ffmpeg-пен кесеміз (download_ranges қолдамайды)
+        if _is_tiktok(url) or _is_threads(url):
+            if _is_tiktok(url):
+                full, title = await loop.run_in_executor(None, _tiktok_download, url, DOWNLOAD_DIR)
+            else:
+                full, title = await loop.run_in_executor(None, _threads_download, url, DOWNLOAD_DIR)
+            out = DOWNLOAD_DIR / f"trim_{uid}.mp4"
+            await msg.edit_text("✂️ Кесілуде...")
+            await loop.run_in_executor(None, lambda: _ffmpeg_cut(Path(full), out, start, end))
+            Path(full).unlink(missing_ok=True)
+            video_path = out
+        else:
+            # yt-dlp — тек керекті бөлікті жүктейді (трафикті үнемдейді)
+            from yt_dlp.utils import download_range_func
+            opts = _base_ydl_opts(url)
+            opts.update({
+                "outtmpl": str(DOWNLOAD_DIR / f"trim_{uid}.%(ext)s"),
+                "format": "best" if _is_youtube(url) else "bestvideo+bestaudio/best",
+                "merge_output_format": "mp4",
+                "download_ranges": download_range_func(None, [(start, end)]),
+                "force_keyframes_at_cuts": True,
+                "progress_hooks": [_make_progress_hook(loop, msg)],
+            })
+            info = await loop.run_in_executor(None, lambda: _ydl_download(opts, url))
+            title = info.get("title") or "video"
+            found = list(DOWNLOAD_DIR.glob(f"trim_{uid}.*"))
+            if not found:
+                await msg.edit_text("❌ Кесілген файл жасалмады. Сілтемені тексеріңіз.")
+                return
+            video_path = found[0]
+
+        # Telegram үшін өңдеу
+        await msg.edit_text("⚙️ Telegram үшін өңделуде...")
+        video_path = await loop.run_in_executor(None, lambda: _convert_for_telegram(video_path, uid))
+        size_mb = video_path.stat().st_size / (1024 * 1024)
+        vw, vh = _get_video_dimensions(video_path)
+        caption = f"✂️ {title[:170]}\n⏱ {_format_duration(start)}–{_format_duration(end)}"
+        await msg.edit_text(f"📤 Жіберілуде... ({size_mb:.0f} МБ)")
+
+        if size_mb > 50 and API_ID and API_HASH:
+            await _pyro_send_video(chat_id, video_path, caption, msg, vw, vh)
+        else:
+            with open(video_path, "rb") as f:
+                await context.bot.send_video(
+                    chat_id=chat_id, video=f, caption=caption,
+                    filename=f"{_safe_name(title)}_cut.mp4",
+                    supports_streaming=True,
+                    width=vw or None, height=vh or None,
+                    read_timeout=600, write_timeout=600, connect_timeout=60,
+                )
+        await msg.delete()
+        video_path.unlink(missing_ok=True)
+
+    except Exception as e:
+        logger.error(f"Trim error: {e}", exc_info=True)
+        for f in DOWNLOAD_DIR.glob(f"trim_{uid}.*"):
+            f.unlink(missing_ok=True)
+        await msg.edit_text(f"❌ Кесу қатесі:\n{str(e)[:300]}")
     finally:
         ACTIVE_USERS.discard(user_id)
 
