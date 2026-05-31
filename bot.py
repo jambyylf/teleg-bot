@@ -850,6 +850,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if is_playlist:
             count = len(info.get("entries") or [])
             lines.append(f"📋 Плейлист: {count} видео")
+            # Плейлисті толық жүктеу батырмасы
+            keyboard = keyboard + [[InlineKeyboardButton(
+                f"📋 Барлығын жүктеу ({count})" if count else "📋 Барлығын жүктеу",
+                callback_data="type:playlist")]]
 
         await msg.edit_text(
             "\n".join(lines),
@@ -886,6 +890,10 @@ async def handle_type_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "• <code>1:02:00-1:05:30</code> (сағат:минут:секунд)",
             parse_mode="HTML",
         )
+
+    elif choice == "playlist":
+        await query.edit_message_text("📋 Плейлист дайындалуда...")
+        await download_and_send_playlist(query, context, url)
 
     elif choice == "video":
         # Threads/TikTok — сапа тексеруге кірмей бірден жүктейміз.
@@ -1439,6 +1447,118 @@ async def download_and_send_trimmed(update: Update, context: ContextTypes.DEFAUL
         for f in DOWNLOAD_DIR.glob(f"trim_{uid}.*"):
             f.unlink(missing_ok=True)
         await msg.edit_text(f"❌ Кесу қатесі:\n{str(e)[:300]}")
+    finally:
+        ACTIVE_USERS.discard(user_id)
+
+
+# ---------------------------------------------------------------------------
+# Плейлист толық жүктеу
+# ---------------------------------------------------------------------------
+
+MAX_PLAYLIST = 25  # бір реттегі ең көп видео саны (шектен асудан қорғау)
+
+
+async def download_and_send_playlist(query, context, url: str) -> None:
+    """Плейлисттегі видеоларды кезекпен жүктеп жібереді."""
+    user_id = query.from_user.id
+    if user_id in ACTIVE_USERS:
+        await query.edit_message_text("⏳ Алдыңғы жүктеу аяқталмады.")
+        return
+    ACTIVE_USERS.add(user_id)
+    chat_id = query.message.chat_id
+    loop = asyncio.get_event_loop()
+
+    try:
+        # Плейлист элементтерін жалпақ режимде алу (жылдам)
+        await query.edit_message_text("📋 Плейлист оқылуда...")
+
+        def _extract():
+            import yt_dlp
+            o = _base_ydl_opts(url)
+            o["extract_flat"] = "in_playlist"
+            o["skip_download"] = True
+            with yt_dlp.YoutubeDL(o) as ydl:
+                return ydl.extract_info(url, download=False)
+
+        info = await loop.run_in_executor(None, _extract)
+        entries = [e for e in (info.get("entries") or []) if e]
+        if not entries:
+            await query.edit_message_text("❌ Плейлисте видео табылмады.")
+            return
+
+        total = len(entries)
+        limited = entries[:MAX_PLAYLIST]
+        pl_title = info.get("title") or "Плейлист"
+        note = ""
+        if total > MAX_PLAYLIST:
+            note = f"\n⚠️ Алғашқы {MAX_PLAYLIST} видео жүктеледі ({total} ішінен)."
+        await query.edit_message_text(
+            f"📋 {pl_title}\n{len(limited)} видео жүктеле бастады...{note}"
+        )
+
+        ok_count = 0
+        for idx, e in enumerate(limited, 1):
+            vurl = e.get("url") or e.get("webpage_url") or e.get("id")
+            if not vurl:
+                continue
+            # YouTube id болса толық URL жасаймыз
+            if not str(vurl).startswith("http"):
+                vurl = f"https://www.youtube.com/watch?v={e.get('id', vurl)}"
+
+            uid = uuid.uuid4().hex[:8]
+            status = await context.bot.send_message(
+                chat_id, f"⬇️ {idx}/{len(limited)} жүктелуде..."
+            )
+            try:
+                opts = _base_ydl_opts(vurl)
+                opts.update({
+                    "outtmpl": str(DOWNLOAD_DIR / f"pl_{uid}.%(ext)s"),
+                    "format": "best" if _is_youtube(vurl) else "bestvideo+bestaudio/best",
+                    "merge_output_format": "mp4",
+                    "noplaylist": True,
+                })
+                vinfo = await loop.run_in_executor(None, lambda o=opts, u=vurl: _ydl_download(o, u))
+                vtitle = vinfo.get("title") or f"video_{idx}"
+                found = list(DOWNLOAD_DIR.glob(f"pl_{uid}.*"))
+                if not found:
+                    await status.edit_text(f"⚠️ {idx}/{len(limited)}: жүктелмеді")
+                    continue
+                vpath = found[0]
+                vpath = await loop.run_in_executor(None, lambda p=vpath, u=uid: _convert_for_telegram(p, u))
+                size_mb = vpath.stat().st_size / (1024 * 1024)
+                vw, vh = _get_video_dimensions(vpath)
+                await status.edit_text(f"📤 {idx}/{len(limited)} жіберілуде...")
+                if size_mb > 50 and API_ID and API_HASH:
+                    await _pyro_send_video(chat_id, vpath, vtitle, status, vw, vh)
+                else:
+                    with open(vpath, "rb") as f:
+                        await context.bot.send_video(
+                            chat_id=chat_id, video=f,
+                            caption=f"🎬 {idx}/{len(limited)}. {vtitle[:180]}",
+                            filename=f"{_safe_name(vtitle)}.mp4",
+                            supports_streaming=True,
+                            width=vw or None, height=vh or None,
+                            read_timeout=600, write_timeout=600, connect_timeout=60,
+                        )
+                await status.delete()
+                vpath.unlink(missing_ok=True)
+                ok_count += 1
+            except Exception as e2:
+                logger.error(f"Playlist item {idx} error: {e2}", exc_info=True)
+                try:
+                    await status.edit_text(f"⚠️ {idx}/{len(limited)}: қате — {str(e2)[:80]}")
+                except Exception:
+                    pass
+                for f in DOWNLOAD_DIR.glob(f"pl_{uid}.*"):
+                    f.unlink(missing_ok=True)
+
+        await context.bot.send_message(
+            chat_id, f"✅ Дайын! {ok_count}/{len(limited)} видео жіберілді."
+        )
+
+    except Exception as e:
+        logger.error(f"Playlist error: {e}", exc_info=True)
+        await query.edit_message_text(f"❌ Плейлист қатесі:\n{str(e)[:300]}")
     finally:
         ACTIVE_USERS.discard(user_id)
 
