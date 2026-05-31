@@ -505,6 +505,17 @@ def _needs_auth(url: str) -> bool:
     return any(d in url.lower() for d in AUTH_DOMAINS)
 
 
+def _is_playlist_url(url: str) -> bool:
+    """Толық плейлист сілтемесі ме? (бір видео емес).
+    watch?v=...&list=... — жеке видео деп есептейміз (тек сол видеоны алады)."""
+    u = url.lower()
+    if "/playlist" in u:
+        return True
+    if "list=" in u and "watch?" not in u and "/shorts/" not in u and "/video/" not in u:
+        return True
+    return False
+
+
 def _base_ydl_opts(url: str = "") -> dict:
     opts: dict = {
         "ffmpeg_location": FFMPEG_DIR,
@@ -826,6 +837,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         msg = await update.message.reply_text("🧵 Threads посты")
         await msg.edit_text("🧵 Threads посты\n\nНе жүктегіңіз келеді?",
                             reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    # Плейлист сілтемесі — арнайы өңдейміз (сілтеме түрі бойынша, get_video_info-сіз)
+    if _is_playlist_url(url):
+        pl_keyboard = [
+            [InlineKeyboardButton("📋 Барлығын жүктеу", callback_data="type:playlist")],
+            [
+                InlineKeyboardButton("🎬 Тек 1-видео", callback_data="type:video"),
+                InlineKeyboardButton("🎵 Тек 1-аудио", callback_data="type:audio"),
+            ],
+        ]
+        await update.message.reply_text(
+            "📋 Бұл плейлист сілтемесі.\n\n"
+            "• «📋 Барлығын жүктеу» — бүкіл плейлисті жүктейді (макс. 25)\n"
+            "• «🎬/🎵 Тек 1-…» — тек бірінші видеоны",
+            reply_markup=InlineKeyboardMarkup(pl_keyboard),
+        )
         return
 
     msg = await update.message.reply_text("🔍 Сілтеме тексерілуде...")
