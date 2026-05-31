@@ -420,7 +420,7 @@ def _tiktok_download_playwright(url: str, out_dir: Path) -> tuple[Path, str]:
     return out_path, title[:80]
 
 
-def _tiktok_download_api(url: str, out_dir: Path) -> tuple[Path, str]:
+def _tiktok_download_api(url: str, out_dir: Path, hd: bool = True) -> tuple[Path, str]:
     """TikTok-ты tikwm.com тегін API арқылы жүктейді (су таңбасыз, кілтсіз).
     Датацентр IP-де де (Railway) жұмыс істейді — видеоны tikwm сервері алып береді."""
     import requests
@@ -439,7 +439,10 @@ def _tiktok_download_api(url: str, out_dir: Path) -> tuple[Path, str]:
     if j.get("code") != 0 or not j.get("data"):
         raise Exception(f"tikwm қатесі: {j.get('msg', 'белгісіз')}")
     data = j["data"]
-    video_url = data.get("hdplay") or data.get("play") or data.get("wmplay")
+    if hd:
+        video_url = data.get("hdplay") or data.get("play") or data.get("wmplay")
+    else:
+        video_url = data.get("play") or data.get("hdplay") or data.get("wmplay")
     title = data.get("title") or "TikTok видео"
     if not video_url:
         raise Exception("tikwm: видео URL табылмады")
@@ -458,10 +461,10 @@ def _tiktok_download_api(url: str, out_dir: Path) -> tuple[Path, str]:
     return out_path, title[:80]
 
 
-def _tiktok_download(url: str, out_dir: Path) -> tuple[Path, str]:
+def _tiktok_download(url: str, out_dir: Path, hd: bool = True) -> tuple[Path, str]:
     """TikTok жүктеу әдістерін кезекпен сынайды: tikwm API → Playwright браузер."""
     errors = []
-    for name, fn in (("tikwm", _tiktok_download_api),
+    for name, fn in (("tikwm", lambda u, d: _tiktok_download_api(u, d, hd)),
                      ("playwright", _tiktok_download_playwright)):
         try:
             path, title = fn(url, out_dir)
@@ -924,12 +927,22 @@ async def handle_type_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await download_and_send_playlist(query, context, url)
 
     elif choice == "video":
-        # Threads/TikTok — сапа тексеруге кірмей бірден жүктейміз.
-        # (TikTok API Railway-де бұғатталады, get_video_info сүрінеді — сондықтан
-        #  бірден download_and_send_video-ға барамыз, ол жерде tikwm/Playwright резерві бар)
-        if _is_threads(url) or _is_tiktok(url):
+        # Threads — бірден жүктейміз (бір сапа)
+        if _is_threads(url):
             await query.edit_message_text("⏳ Видео жүктелуде, күте тұрыңыз...")
             await download_and_send_video(query, context, url, height=None)
+            return
+
+        # TikTok — HD/SD сапасын таңдатамыз
+        if _is_tiktok(url):
+            kb = [[
+                InlineKeyboardButton("📹 HD (жоғары)", callback_data="ttq:hd"),
+                InlineKeyboardButton("📱 SD (кішірек)", callback_data="ttq:sd"),
+            ]]
+            await query.edit_message_text(
+                "🎬 TikTok сапасын таңдаңыз:",
+                reply_markup=InlineKeyboardMarkup(kb),
+            )
             return
 
         await query.edit_message_text("⏳ Сапалар анықталуда...")
@@ -992,6 +1005,20 @@ async def handle_quality_choice(update: Update, context: ContextTypes.DEFAULT_TY
         height = int(value)
         await query.edit_message_text(f"⏳ {height}p сапасында жүктелуде, күте тұрыңыз...")
         await download_and_send_video(query, context, url, height=height)
+
+
+async def handle_tiktok_quality(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """TikTok HD/SD сапа таңдауын өңдейді."""
+    query = update.callback_query
+    await query.answer()
+    quality = query.data.split(":")[1]  # hd немесе sd
+    url = context.user_data.get(USER_URL_KEY)
+    if not url:
+        await query.edit_message_text("Сілтеме табылмады. Қайта жіберіңіз.")
+        return
+    context.user_data["tiktok_hd"] = (quality == "hd")
+    await query.edit_message_text("⏳ TikTok жүктелуде...")
+    await download_and_send_video(query, context, url, height=None)
 
 
 # ---------------------------------------------------------------------------
@@ -1191,8 +1218,10 @@ async def download_and_send_video(query, context, url: str, height: int | None) 
     if _is_tiktok(url):
         try:
             loop = asyncio.get_event_loop()
+            hd = context.user_data.get("tiktok_hd", True) if context else True
             await query.edit_message_text("⏳ TikTok жүктелуде...")
-            video_path, title = await loop.run_in_executor(None, _tiktok_download, url, DOWNLOAD_DIR)
+            video_path, title = await loop.run_in_executor(
+                None, lambda: _tiktok_download(url, DOWNLOAD_DIR, hd))
             await query.edit_message_text("⚙️ Telegram үшін өңделуде...")
             uid = video_path.stem.split("_")[1] if "_" in video_path.stem else uuid.uuid4().hex[:8]
             video_path = await loop.run_in_executor(None, lambda: _convert_for_telegram(video_path, uid))
@@ -1929,6 +1958,7 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_type_choice, pattern=r"^type:"))
     app.add_handler(CallbackQueryHandler(handle_quality_choice, pattern=r"^quality:"))
+    app.add_handler(CallbackQueryHandler(handle_tiktok_quality, pattern=r"^ttq:"))
 
     logger.info("Video Downloader Bot іске қосылды...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
