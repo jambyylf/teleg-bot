@@ -1659,7 +1659,16 @@ def _instagram_download_all(url: str, uid: str) -> tuple[list, str]:
         except Exception as ex:
             logger.warning(f"IG media {i} жүктеу қатесі: {ex}")
 
-    return sorted(files), (info.get("title") or "Instagram")
+    # Диагностика: медиа табылмаса, info құрылымын қайтарамыз (себебін көру үшін)
+    debug = ""
+    if not files:
+        top_keys = list(info.keys())[:15]
+        n = len(entries)
+        e0keys = list(entries[0].keys())[:18] if entries else []
+        debug = (f"info_keys={top_keys}\nentries={n}\n"
+                 f"first_entry_keys={e0keys}")
+
+    return sorted(files), (info.get("title") or "Instagram"), debug
 
 
 async def download_and_send_instagram(query, context, url: str) -> None:
@@ -1676,12 +1685,12 @@ async def download_and_send_instagram(query, context, url: str) -> None:
     VIDEO_EXT = {".mp4", ".mov", ".webm", ".mkv"}
 
     try:
-        files, title = await loop.run_in_executor(None, lambda: _instagram_download_all(url, uid))
+        files, title, debug = await loop.run_in_executor(None, lambda: _instagram_download_all(url, uid))
         if not files:
-            await query.edit_message_text(
-                "❌ Медиа табылмады.\n"
-                "Instagram үшін жаңа cookies керек болуы мүмкін (/setcookies)."
-            )
+            msg = "❌ Медиа табылмады.\nInstagram үшін жаңа cookies керек болуы мүмкін (/setcookies)."
+            if debug:
+                msg += f"\n\n🔍 Debug:\n{debug}"
+            await query.edit_message_text(msg[:4000])
             return
 
         await query.edit_message_text(f"📤 {len(files)} медиа жіберілуде...")
