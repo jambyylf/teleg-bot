@@ -927,11 +927,14 @@ async def handle_type_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if choice in ("batch", "batchvideo", "batchaudio"):
             _n = len(context.user_data.get("batch_urls") or [])
             _t = f"{_n} сілтеме (batch)"
+            _u = ", ".join((context.user_data.get("batch_urls") or [])[:5])
         else:
             _info = context.user_data.get("dl_info") or {}
             _t = _info.get("title") or context.user_data.get(USER_URL_KEY) or "Жүктеу"
+            _u = context.user_data.get(USER_URL_KEY) or ""
         _add_history(update.effective_user.id, _t, choice)
         _bump_stats(update.effective_user.id, choice)
+        _admin_log(update.effective_user, _t, _u, choice)
     except Exception:
         pass
 
@@ -1868,7 +1871,79 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         lines.append(f"  {icons.get(k, '📦')} {k}: {v}")
     if not ADMIN_ID:
         lines.append("\n💡 Тек өзіңізге шектеу үшін Railway-де ADMIN_ID орнатыңыз (/myid).")
+    lines.append("\n📋 Кім нені жүктегенін көру: /userlog")
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+ADMIN_LOG_FILE = Path("admin_log.json")
+ADMIN_LOG_MAX = 300  # жаһандық журналда сақталатын соңғы жазба саны
+
+
+def _admin_log(user, title, url, kind) -> None:
+    """Әр жүктеуді жаһандық журналға жазады (модерация үшін: кім, не, қашан)."""
+    import json
+    import time as _t
+    try:
+        data = []
+        if ADMIN_LOG_FILE.exists():
+            data = json.loads(ADMIN_LOG_FILE.read_text(encoding="utf-8"))
+        name = ""
+        try:
+            name = ("@" + user.username) if getattr(user, "username", None) else (getattr(user, "first_name", "") or "")
+        except Exception:
+            pass
+        data.insert(0, {
+            "uid": user.id, "name": name,
+            "title": str(title)[:80], "url": str(url)[:200],
+            "kind": kind, "ts": int(_t.time()),
+        })
+        ADMIN_LOG_FILE.write_text(json.dumps(data[:ADMIN_LOG_MAX], ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"admin_log: {e}")
+
+
+async def cmd_userlog(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/userlog [user_id] — кім қандай видео жүктегенін көрсетеді (тек админге)."""
+    import json
+    uid = update.effective_user.id
+    if ADMIN_ID and str(uid) != str(ADMIN_ID):
+        await update.message.reply_text("⛔ Бұл команда тек админге арналған.")
+        return
+    if not ADMIN_LOG_FILE.exists():
+        await update.message.reply_text("📋 Журнал бос.")
+        return
+    try:
+        data = json.loads(ADMIN_LOG_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        await update.message.reply_text("📋 Журналды оқу қатесі.")
+        return
+    # /userlog <user_id> — белгілі бір қолданушыны сүзу
+    if context.args:
+        try:
+            fid = int(context.args[0])
+            data = [d for d in data if d.get("uid") == fid]
+        except ValueError:
+            pass
+    if not data:
+        await update.message.reply_text("📋 Жазба табылмады.")
+        return
+    icons = {
+        "video": "🎬", "audio": "🎵", "trim": "✂️", "subs": "📝",
+        "playlist": "📋", "batch": "📥", "batchvideo": "📥", "batchaudio": "🎶",
+        "instagram": "🖼",
+    }
+    out = ["📋 Соңғы жүктеулер (кім → не):\n"]
+    for d in data[:25]:
+        ic = icons.get(d.get("kind"), "📦")
+        nm = d.get("name") or "?"
+        out.append(
+            f"{ic} {nm} (id:{d.get('uid')})\n"
+            f"   {d.get('title', '?')}\n"
+            f"   {d.get('url', '')[:70]}\n"
+            f"   🕓 {_fmt_ts(d.get('ts', 0))}\n"
+        )
+    text = "\n".join(out)
+    await update.message.reply_text(text[:4000])
 
 
 # ---------------------------------------------------------------------------
@@ -2513,6 +2588,7 @@ def main() -> None:
     app.add_handler(CommandHandler("getcookies", cmd_getcookies))
     app.add_handler(CommandHandler("history", cmd_history))
     app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(CommandHandler("userlog", cmd_userlog))
     app.add_handler(CommandHandler("myid", cmd_myid))
     app.add_handler(CommandHandler("language", cmd_language))
     app.add_handler(CallbackQueryHandler(handle_lang_choice, pattern=r"^lang:"))
