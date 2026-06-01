@@ -2531,6 +2531,7 @@ async def _pyro_send_video(chat_id: int, path: Path, title: str, progress_msg,
         api_id=int(API_ID),
         api_hash=API_HASH,
         bot_token=BOT_TOKEN,
+        in_memory=True,  # сессияны жадыда ұстаймыз (ескі/басқа бот сессиясын қолданбау үшін)
     ) as app:
         last = [0]
         async def progress(current, total):
@@ -2562,6 +2563,7 @@ async def _pyro_send_audio(chat_id: int, path: Path, title: str, progress_msg) -
         api_id=int(API_ID),
         api_hash=API_HASH,
         bot_token=BOT_TOKEN,
+        in_memory=True,  # сессияны жадыда ұстаймыз (ескі/басқа бот сессиясын қолданбау үшін)
     ) as app:
         last = [0]
         async def progress(current, total):
