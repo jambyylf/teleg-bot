@@ -1396,27 +1396,16 @@ async def download_and_send_video(query, context, url: str, height: int | None) 
         "progress_hooks": [_make_progress_hook(loop, query.message)],
     })
 
-    # Алдын ала алынған info болса — format ID қолмен таңдаймыз
-    stored_info = context.user_data.get("dl_info") if context else None
-    fmt_id = None
-    if stored_info and _is_youtube(url):
-        fmt_id = _pick_format_id(stored_info, height)
-        opts["format"] = fmt_id
-        n_formats = len(stored_info.get("formats", []))
-        await query.edit_message_text(f"⏳ Format: {fmt_id} (жалпы: {n_formats}), жүктелуде...")
-
     try:
         video_path = None
         title = context.user_data.get("dl_title") or "video"
 
-        # Алдымен yt-dlp арқылы жүктеп көреміз
+        # Алдымен yt-dlp арқылы жүктеп көреміз.
+        # (Бұрын YouTube-та _ydl_download_from_info оптимизациясы қолданылған,
+        #  бірақ ол кейде бұзық/қысқа файл беретін — сондықтан әрқашан сенімді
+        #  _ydl_download_with_retry қолданамыз: yt-dlp видео+аудионы өзі біріктіреді)
         try:
-            if stored_info and _is_youtube(url):
-                info = await loop.run_in_executor(
-                    None, lambda: _ydl_download_from_info(opts, stored_info)
-                )
-            else:
-                info = await loop.run_in_executor(None, lambda: _ydl_download_with_retry(opts, url))
+            info = await loop.run_in_executor(None, lambda: _ydl_download_with_retry(opts, url))
             title = context.user_data.get("dl_title") or info.get("title") or "video"
 
             mp4_files = list(DOWNLOAD_DIR.glob(f"video_{uid}.mp4"))
