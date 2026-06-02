@@ -585,18 +585,21 @@ def _ydl_download_with_retry(opts: dict, url: str) -> dict:
         return _ydl_download(opts, url)
     except Exception as first_err:
         err_str = str(first_err).lower()
-        # YouTube блогы — барлық client-тарды кезекпен сынайды
+        # YouTube блогы — барлық client-тарды кезекпен сынайды.
+        # Әр клиентте формат жолын да жеңілдетеміз (кейбір клиентте тек combined
+        # формат бар, сондықтан bestvideo+bestaudio "not available" береді).
         if _is_youtube(url):
             for client in [["tv_embedded"], ["android_vr"], ["mweb"], ["ios"], ["android"],
                            ["tv_embedded", "mweb"], ["android_vr", "mweb"]]:
-                retry_opts = dict(opts)
-                retry_opts["extractor_args"] = {
-                    "youtube": {"player_client": client}
-                }
-                try:
-                    return _ydl_download(retry_opts, url)
-                except Exception:
-                    continue
+                for fmt in ("best", "bestvideo+bestaudio/best", None):
+                    retry_opts = dict(opts)
+                    retry_opts["extractor_args"] = {"youtube": {"player_client": client}}
+                    if fmt:
+                        retry_opts["format"] = fmt
+                    try:
+                        return _ydl_download(retry_opts, url)
+                    except Exception:
+                        continue
         # TikTok — барлық hostname + app_name комбинацияларын сынайды
         if _is_tiktok(url):
             tiktok_configs = [
