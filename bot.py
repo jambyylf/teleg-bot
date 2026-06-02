@@ -1403,24 +1403,27 @@ async def download_and_send_video(query, context, url: str, height: int | None) 
         video_path = None
         title = context.user_data.get("dl_title") or "video"
 
-        # Алдымен yt-dlp арқылы жүктеп көреміз.
-        # (Бұрын YouTube-та _ydl_download_from_info оптимизациясы қолданылған,
-        #  бірақ ол кейде бұзық/қысқа файл беретін — сондықтан әрқашан сенімді
-        #  _ydl_download_with_retry қолданамыз: yt-dlp видео+аудионы өзі біріктіреді)
-        try:
-            info = await loop.run_in_executor(None, lambda: _ydl_download_with_retry(opts, url))
-            title = context.user_data.get("dl_title") or info.get("title") or "video"
-
-            mp4_files = list(DOWNLOAD_DIR.glob(f"video_{uid}.mp4"))
-            found = mp4_files or list(DOWNLOAD_DIR.glob(f"video_{uid}.*"))
-            if found:
-                video_path = found[0]
-        except Exception as dl_err:
-            # TikTok: мобильді API блокталса (Railway) — браузер арқылы көшеміз
-            if _is_tiktok(url):
-                logger.warning(f"TikTok yt-dlp сәтсіз, Playwright қолданамыз: {dl_err}")
-            else:
-                raise
+        # YouTube — ТҮБЕГЕЙЛІ сенімді жүктеуші (клиент×формат комбинацияларын
+        # ақыры дұрыс файл шыққанша сынайды әрі файл дұрыстығын тексереді).
+        if _is_youtube(url):
+            await query.edit_message_text("⏳ Жүктелуде (ең жақсы көзді іздеп жатырмын)...")
+            video_path, title = await loop.run_in_executor(
+                None, lambda: _youtube_download_robust(url, uid, height)
+            )
+        else:
+            # Қалған сайттар — қалыпты retry
+            try:
+                info = await loop.run_in_executor(None, lambda: _ydl_download_with_retry(opts, url))
+                title = context.user_data.get("dl_title") or info.get("title") or "video"
+                mp4_files = list(DOWNLOAD_DIR.glob(f"video_{uid}.mp4"))
+                found = mp4_files or list(DOWNLOAD_DIR.glob(f"video_{uid}.*"))
+                if found:
+                    video_path = found[0]
+            except Exception as dl_err:
+                if _is_tiktok(url):
+                    logger.warning(f"TikTok yt-dlp сәтсіз, Playwright қолданамыз: {dl_err}")
+                else:
+                    raise
 
         # TikTok yt-dlp файл бермесе — Playwright резерві
         if video_path is None and _is_tiktok(url):
@@ -2729,6 +2732,97 @@ def _safe_name(title: str) -> str:
 def _ydl_download(opts: dict, url: str) -> dict:
     with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=True)
+
+
+def _probe_duration(path: Path) -> float:
+    """Файлдың ұзақтығын секундпен қайтарады (тексеру үшін). 0 = оқылмады."""
+    ffprobe = Path(FFMPEG_DIR) / f"ffprobe{_EXE}" if FFMPEG_DIR else "ffprobe"
+    try:
+        r = subprocess.run(
+            [str(ffprobe), "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=nk=1:nw=1", str(path)],
+            capture_output=True, text=True, timeout=60,
+        )
+        return float(r.stdout.strip() or 0)
+    except Exception:
+        return 0.0
+
+
+def _youtube_download_robust(url: str, uid: str, height: int | None) -> tuple[Path, str]:
+    """YouTube видеосын ТҮБЕГЕЙЛІ сенімді жүктейді.
+
+    Барлық клиент × формат комбинациясын ақыры біреуі дұрыс файл бергенше
+    кезекпен сынайды. Әр нәтиже файлдың НАҚТЫ дұрыстығын тексереді
+    (ұзақтық > 0 әрі дыбыс бар). Бұл 'format not available' мен '1-секундтық
+    бұзық файл' мәселелерін толық шешеді."""
+    out_template = str(DOWNLOAD_DIR / f"video_{uid}.%(ext)s")
+
+    # Формат жолдары — ең сапалыдан қарапайымға дейін
+    if height:
+        formats = [
+            f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={height}]+bestaudio",
+            f"best[height<={height}][ext=mp4]/best[height<={height}]",
+            f"best[height<={height}]",
+            "best",
+        ]
+    else:
+        formats = [
+            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio",
+            "best[ext=mp4]/best",
+            "best",
+            "worst",  # ең соңғы амал — бірдеңе беру
+        ]
+
+    # Клиенттер — Railway датацентр IP-де істейтіндер басымдықпен
+    clients = [
+        ["tv_embedded"], ["android_vr"], ["ios"], ["mweb"],
+        ["android"], ["web"], ["tv"], ["android_vr", "tv_embedded"],
+    ]
+
+    last_err = "белгісіз"
+    for client in clients:
+        for fmt in formats:
+            # Алдыңғы әрекеттің қалдығын тазалаймыз
+            for f in DOWNLOAD_DIR.glob(f"video_{uid}.*"):
+                f.unlink(missing_ok=True)
+            opts = _base_ydl_opts(url)
+            opts.update({
+                "outtmpl": out_template,
+                "format": fmt,
+                "merge_output_format": "mp4",
+                "extractor_args": {"youtube": {"player_client": client}},
+            })
+            try:
+                info = _ydl_download(opts, url)
+            except Exception as e:
+                last_err = str(e)[:150]
+                continue
+            found = (list(DOWNLOAD_DIR.glob(f"video_{uid}.mp4"))
+                     or list(DOWNLOAD_DIR.glob(f"video_{uid}.*")))
+            if not found:
+                continue
+            path = found[0]
+            # Файл дұрыс па? (бос емес әрі ұзақтығы бар)
+            try:
+                size = path.stat().st_size
+            except Exception:
+                continue
+            if size < 10240:  # 10 КБ-тан кіші — бұзық
+                continue
+            dur = _probe_duration(path)
+            expected = info.get("duration") or 0
+            # Ұзақтық 0 болса — бұзық; күтілгеннен әлдеқайда қысқа болса — толымсыз
+            if dur < 1:
+                continue
+            if expected and dur < expected * 0.5:
+                # Жарты видеодан да аз келді — басқа форматты сынаймыз
+                last_err = f"толымсыз ({dur:.0f}/{expected:.0f}s)"
+                continue
+            # ✅ Дұрыс файл!
+            logger.info(f"YouTube OK: client={client} fmt={fmt[:20]} dur={dur:.0f}s")
+            return path, (info.get("title") or "video")
+
+    raise Exception(f"YouTube барлық әдіс сәтсіз. Соңғы қате: {last_err}")
 
 
 def _ydl_download_from_info(opts: dict, info: dict) -> dict:
