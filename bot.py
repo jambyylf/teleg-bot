@@ -1562,15 +1562,38 @@ async def download_and_send_trimmed(update: Update, context: ContextTypes.DEFAUL
     ACTIVE_USERS.add(user_id)
 
     chat_id = update.effective_chat.id
+
+    # YouTube clip (/clip/) — өзі қазірдің өзінде кесінді. Оған download_ranges
+    # қолдану ffmpeg қатесін береді (code 222). Сондықтан трим елемей, clip-ті
+    # толық жүктейміз.
+    is_clip = "/clip/" in url.lower()
+
     msg = await update.message.reply_text(
-        f"✂️ {_format_duration(start)}–{_format_duration(end)} аралығы жүктелуде..."
+        ("ℹ️ YouTube clip — толығымен жүктелуде..." if is_clip
+         else f"✂️ {_format_duration(start)}–{_format_duration(end)} аралығы жүктелуде...")
     )
     loop = asyncio.get_event_loop()
     uid = uuid.uuid4().hex[:8]
 
     try:
+        if is_clip:
+            # Clip-ті тұтас жүктейміз (download_ranges-сіз)
+            opts = _base_ydl_opts(url)
+            opts.update({
+                "outtmpl": str(DOWNLOAD_DIR / f"trim_{uid}.%(ext)s"),
+                "format": "best",
+                "merge_output_format": "mp4",
+                "progress_hooks": [_make_progress_hook(loop, msg)],
+            })
+            info = await loop.run_in_executor(None, lambda: _ydl_download(opts, url))
+            title = info.get("title") or "clip"
+            found = list(DOWNLOAD_DIR.glob(f"trim_{uid}.*"))
+            if not found:
+                await msg.edit_text("❌ Clip жүктелмеді. Сілтемені тексеріңіз.")
+                return
+            video_path = found[0]
         # TikTok/Threads — толық жүктеп, ffmpeg-пен кесеміз (download_ranges қолдамайды)
-        if _is_tiktok(url) or _is_threads(url):
+        elif _is_tiktok(url) or _is_threads(url):
             if _is_tiktok(url):
                 full, title = await loop.run_in_executor(None, _tiktok_download, url, DOWNLOAD_DIR)
             else:
