@@ -35,6 +35,9 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 API_ID    = os.getenv("API_ID")
 API_HASH  = os.getenv("API_HASH")
+# Residential proxy (YouTube блогын айналып өту үшін). Мысалы:
+# http://user:pass@host:port  — Railway → Variables → PROXY_URL
+PROXY_URL = os.getenv("PROXY_URL", "").strip()
 DOWNLOAD_DIR = Path("downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
@@ -576,6 +579,11 @@ def _base_ydl_opts(url: str = "") -> dict:
     # Cookies бар болса — барлық сайтқа қолданамыз
     if COOKIES_FILE.exists():
         opts["cookiefile"] = str(COOKIES_FILE)
+
+    # Proxy (Railway env-те PROXY_URL орнатылса) — YouTube блогын айналып өту үшін.
+    # Тек YouTube-қа қолданамыз (TikTok/басқалар proxy-сіз жақсы істейді).
+    if PROXY_URL and _is_youtube(url):
+        opts["proxy"] = PROXY_URL
     return opts
 
 
