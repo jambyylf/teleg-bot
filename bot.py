@@ -3336,7 +3336,29 @@ async def _notify_admin_error(context, user, url, err, platform="") -> None:
 
 
 def _check_pot_provider() -> None:
-    """Іске қосылғанда PO Token провайдеріне қосылымды тексереді (логқа жазады)."""
+    """Іске қосылғанда PO Token баптауын тексереді (логқа жазады):
+    yt-dlp нұсқасы, bgutil плагині жүктелді ме, провайдерге қосылым бар ма."""
+    try:
+        import yt_dlp as _y
+        logger.info(f"yt-dlp нұсқасы: {_y.version.__version__}")
+    except Exception:
+        pass
+
+    # bgutil плагині yt-dlp-ке жүктелді ме? (жаңа және ескі модуль жолдары)
+    plugin_loaded = False
+    for mod in ("yt_dlp_plugins.extractor.youtube.pot.bgutil_http",
+                "yt_dlp_plugins.extractor.youtube.pot.bgutil_script_node",
+                "yt_dlp_plugins.extractor.getpot_bgutil_http"):
+        try:
+            __import__(mod)
+            plugin_loaded = True
+            logger.info(f"bgutil PO Token плагині: ✅ жүктелді ({mod})")
+            break
+        except Exception:
+            continue
+    if not plugin_loaded:
+        logger.warning("bgutil PO Token плагині: ❌ ЖҮКТЕЛМЕДІ (pip орнатылмаған не yt-dlp ескі)")
+
     if not POT_PROVIDER_URL:
         logger.info("PO Token: ❌ POT_PROVIDER_URL бапталмаған")
         return
