@@ -555,12 +555,18 @@ def _is_instagram(url: str) -> bool:
 
 def _youtube_extractor_args(player_client=None) -> dict:
     """YouTube extractor_args құрады. PO Token провайдері бапталса —
-    оны да қосады (web/mweb клиенттері осы токенді пайдаланады)."""
-    ea = {
-        "youtube": {
-            "player_client": player_client or ["tv_embedded", "android_vr", "ios", "android"],
-        }
-    }
+    оны да қосады.
+
+    МАҢЫЗДЫ: GVS PO Token тек web-негізді клиенттерде (web, mweb, tv...)
+    қолданылады. Сондықтан провайдер бар болса, web клиенттерін алға қоямыз —
+    әйтпесе bgutil-ге сұраныс жіберілмей, бот тексеруі айналып өтілмейді."""
+    if player_client is None:
+        if POT_PROVIDER_URL:
+            player_client = ["web", "mweb", "tv", "web_embedded",
+                             "tv_embedded", "android_vr", "ios"]
+        else:
+            player_client = ["tv_embedded", "android_vr", "ios", "android"]
+    ea = {"youtube": {"player_client": player_client}}
     if POT_PROVIDER_URL:
         # bgutil HTTP провайдеріне базалық URL береміз
         ea["youtubepot-bgutilhttp"] = {"base_url": [POT_PROVIDER_URL]}
@@ -2821,11 +2827,18 @@ def _youtube_download_robust(url: str, uid: str, height: int | None) -> tuple[Pa
             "worst",  # ең соңғы амал — бірдеңе беру
         ]
 
-    # Клиенттер — Railway датацентр IP-де істейтіндер басымдықпен
-    clients = [
-        ["tv_embedded"], ["android_vr"], ["ios"], ["mweb"],
-        ["android"], ["web"], ["tv"], ["android_vr", "tv_embedded"],
-    ]
+    # Клиенттер. PO Token провайдері бар болса — web-негізді клиенттер алға
+    # (тек солар GVS po_token-ды пайдаланып бот тексеруін айналып өтеді).
+    if POT_PROVIDER_URL:
+        clients = [
+            ["web"], ["mweb"], ["tv"], ["web_embedded"],
+            ["tv_embedded"], ["android_vr"], ["ios"], ["android"],
+        ]
+    else:
+        clients = [
+            ["tv_embedded"], ["android_vr"], ["ios"], ["mweb"],
+            ["android"], ["web"], ["tv"], ["android_vr", "tv_embedded"],
+        ]
 
     # Проксилер — Webshare тегін жоспары бірнеше IP береді. Бір IP блокталса,
     # келесісіне ауысамыз. Соңында тікелей (None) де сынаймыз — po_token бар болса
@@ -3322,11 +3335,25 @@ async def _notify_admin_error(context, user, url, err, platform="") -> None:
         logger.warning(f"admin notify fail: {_e}")
 
 
+def _check_pot_provider() -> None:
+    """Іске қосылғанда PO Token провайдеріне қосылымды тексереді (логқа жазады)."""
+    if not POT_PROVIDER_URL:
+        logger.info("PO Token: ❌ POT_PROVIDER_URL бапталмаған")
+        return
+    try:
+        import requests
+        r = requests.get(POT_PROVIDER_URL.rstrip("/") + "/ping", timeout=10)
+        logger.info(f"PO Token провайдері: ✅ ҚОСЫЛДЫ [{r.status_code}] {POT_PROVIDER_URL} | {r.text[:120]}")
+    except Exception as e:
+        logger.warning(f"PO Token провайдеріне ҚОСЫЛА АЛМАДЫМ: {POT_PROVIDER_URL} — {type(e).__name__}: {e}")
+
+
 def main() -> None:
     if not BOT_TOKEN:
         raise ValueError("BOT_TOKEN .env файлында жоқ!")
     if not FFMPEG_DIR:
         logger.warning("FFmpeg табылмады! Аудио/видео merge жұмыс істемеуі мүмкін.")
+    _check_pot_provider()
 
     app = (
         Application.builder()
