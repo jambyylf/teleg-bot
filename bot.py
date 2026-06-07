@@ -115,6 +115,11 @@ YOUTUBE_DOMAINS = ("youtube.com", "youtu.be", "youtube-nocookie.com")
 # TikTok домендері — браузер impersonation керек
 TIKTOK_DOMAINS = ("tiktok.com", "vm.tiktok.com", "vt.tiktok.com")
 
+# Яндекс Музыка домендері — тек аудио (MP3) ретінде жүктейміз.
+# Толық трек үшін Yandex cookies (Session_id) керек, әйтпесе тек ~30 сек.
+YANDEX_MUSIC_DOMAINS = ("music.yandex.ru", "music.yandex.kz",
+                        "music.yandex.com", "music.yandex.by", "music.yandex.uz")
+
 # Кіруді қажет ететін сайттар — cookies.txt пайдаланады
 AUTH_DOMAINS = (
     "instagram.com", "facebook.com", "fb.com", "fb.watch",
@@ -532,6 +537,10 @@ def _is_youtube(url: str) -> bool:
 
 def _is_tiktok(url: str) -> bool:
     return any(d in url.lower() for d in TIKTOK_DOMAINS)
+
+
+def _is_yandex_music(url: str) -> bool:
+    return any(d in url.lower() for d in YANDEX_MUSIC_DOMAINS)
 
 
 def _needs_auth(url: str) -> bool:
@@ -986,6 +995,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data.pop("awaiting_trim", None)
 
     lang = _get_lang(update.effective_user.id)
+
+    # Яндекс Музыка — тек аудио (MP3). Бір ғана батырма: MP3 жүктеу.
+    if _is_yandex_music(url):
+        note = ("" if COOKIES_FILE.exists() else
+                "\n\n⚠️ Толық трек үшін Yandex Music cookies керек "
+                "(/setcookies). Cookies болмаса тек ~30 секунд жүктеледі.")
+        kb = [[InlineKeyboardButton("🎵 MP3 жүктеу", callback_data="type:audio")]]
+        await update.message.reply_text(
+            "🎵 Яндекс Музыка табылды." + note,
+            reply_markup=InlineKeyboardMarkup(kb),
+        )
+        return
 
     # Плейлист — арнайы мәзір (бүкіл плейлист / тек біреуі)
     if _is_playlist_url(url):
