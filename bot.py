@@ -610,10 +610,10 @@ def _base_ydl_opts(url: str = "") -> dict:
     if COOKIES_FILE.exists():
         opts["cookiefile"] = str(COOKIES_FILE)
 
-    # Proxy (Railway env-те PROXY_URL орнатылса) — YouTube блогын айналып өту үшін.
-    # Тек YouTube-қа қолданамыз (TikTok/басқалар proxy-сіз жақсы істейді).
-    if PROXY_URL and _is_youtube(url):
-        opts["proxy"] = PROXY_URL
+    # ЕСКЕРТУ: проксиді мұнда ӘДЕЙІ ҚОСПАЙМЫЗ. po_token блокты IP-ге тәуелсіз
+    # айналып өтеді, сондықтан әдепкі — тікелей (тегін, шексіз). Прокси тек
+    # қажет болғанда fallback ретінде қосылады (get_video_info + robust downloader),
+    # сол арқылы Webshare тегін проксиінің 1GB/ай лимитін үнемдейміз.
     return opts
 
 
@@ -754,21 +754,27 @@ def get_video_info(url: str) -> dict:
                 info = ydl.extract_info(url, download=False, process=True)
             return info
 
+    # YouTube — алдымен ТІКЕЛЕЙ (po_token блокты шешеді), сосын прокси fallback.
+    # opts-та клиент тізімі (web-first) + po_token бар; тек проксиді ауыстырамыз.
+    if _is_youtube(url):
+        yt_proxies = ([None] + PROXY_LIST) if PROXY_LIST else [None]
+        last_err: Exception | None = None
+        for proxy in yt_proxies:
+            o = dict(opts)
+            if proxy:
+                o["proxy"] = proxy
+            else:
+                o.pop("proxy", None)
+            try:
+                return _extract(o, process=False)
+            except Exception as e:
+                last_err = e
+                continue
+        raise last_err or Exception("YouTube ақпарат алынбады")
+
     try:
         return _extract(opts, process=False)
     except Exception:
-        # YouTube — барлық client-тарды сынайды (po_token бар болса web алға)
-        if _is_youtube(url):
-            yt_clients = ([["web"], ["mweb"], ["tv"], ["web_embedded"], ["tv_embedded"],
-                          ["android_vr"], ["ios"]] if POT_PROVIDER_URL else
-                         [["tv_embedded"], ["android_vr"], ["ios"], ["android"], ["mweb"]])
-            for client in yt_clients:
-                retry = dict(opts)
-                retry["extractor_args"] = _youtube_extractor_args(client)
-                try:
-                    return _extract(retry, process=False)
-                except Exception:
-                    continue
         if _is_tiktok(url):
             tiktok_configs = [
                 {"api_hostname": ["api19-normal-c-useast1a.tiktokv.com"], "app_name": ["musical_ly"], "app_version": ["26.1.3"]},
