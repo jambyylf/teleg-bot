@@ -35,9 +35,23 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 API_ID    = os.getenv("API_ID")
 API_HASH  = os.getenv("API_HASH")
-# Residential proxy (YouTube блогын айналып өту үшін). Мысалы:
-# http://user:pass@host:port  — Railway → Variables → PROXY_URL
-PROXY_URL = os.getenv("PROXY_URL", "").strip()
+# Proxy (YouTube блогын айналып өту үшін). Webshare.io тегін жоспары 10 IP береді.
+# PROXY_URL — бір прокси НЕМЕСЕ үтір/жаңа жолмен бөлінген бірнешеу:
+#   http://user:pass@host:port
+#   http://user:pass@ip1:port, http://user:pass@ip2:port, ...
+# Ең қарапайымы — Webshare "rotating" endpoint (http://user:pass@p.webshare.io:80):
+# ол әр сұраныста IP-ді өзі ауыстырады, бір ғана URL жеткілікті.
+# Railway → Variables → PROXY_URL
+PROXY_LIST = [p.strip() for p in re.split(r"[,\n]+", os.getenv("PROXY_URL", "")) if p.strip()]
+# Біріншісі — қалыпты (robust емес) жолдар үшін негізгі прокси
+PROXY_URL = PROXY_LIST[0] if PROXY_LIST else ""
+
+# PO Token провайдері (bgutil-ytdlp-pot-provider HTTP сервері).
+# YouTube "Sign in to confirm you're not a bot" блогын cookies-сіз айналып өтеді.
+# Бөлек Railway сервисінде істейді — оның ішкі мекенжайын осында береміз:
+#   http://bgutil-provider.railway.internal:4416
+# Бос болса — bgutil плагині әдепкі 127.0.0.1:4416-дан іздейді (сол контейнерде істесе).
+POT_PROVIDER_URL = os.getenv("POT_PROVIDER_URL", "").strip()
 DOWNLOAD_DIR = Path("downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
@@ -539,6 +553,20 @@ def _is_instagram(url: str) -> bool:
     return "instagram.com" in url.lower()
 
 
+def _youtube_extractor_args(player_client=None) -> dict:
+    """YouTube extractor_args құрады. PO Token провайдері бапталса —
+    оны да қосады (web/mweb клиенттері осы токенді пайдаланады)."""
+    ea = {
+        "youtube": {
+            "player_client": player_client or ["tv_embedded", "android_vr", "ios", "android"],
+        }
+    }
+    if POT_PROVIDER_URL:
+        # bgutil HTTP провайдеріне базалық URL береміз
+        ea["youtubepot-bgutilhttp"] = {"base_url": [POT_PROVIDER_URL]}
+    return ea
+
+
 def _base_ydl_opts(url: str = "") -> dict:
     opts: dict = {
         "ffmpeg_location": FFMPEG_DIR,
@@ -549,11 +577,7 @@ def _base_ydl_opts(url: str = "") -> dict:
         "retries": 3,
     }
     if _is_youtube(url):
-        opts["extractor_args"] = {
-            "youtube": {
-                "player_client": ["tv_embedded", "android_vr", "ios", "android"],
-            }
-        }
+        opts["extractor_args"] = _youtube_extractor_args()
         opts["socket_timeout"] = 60
         opts["retries"] = 5
         # YouTube форматын кеңейту
@@ -601,7 +625,7 @@ def _ydl_download_with_retry(opts: dict, url: str) -> dict:
                            ["tv_embedded", "mweb"], ["android_vr", "mweb"]]:
                 for fmt in ("best", "bestvideo+bestaudio/best", None):
                     retry_opts = dict(opts)
-                    retry_opts["extractor_args"] = {"youtube": {"player_client": client}}
+                    retry_opts["extractor_args"] = _youtube_extractor_args(client)
                     if fmt:
                         retry_opts["format"] = fmt
                     try:
@@ -703,7 +727,7 @@ def get_video_info(url: str) -> dict:
         if _is_youtube(url):
             for client in [["tv_embedded"], ["android_vr"], ["ios"], ["android"], ["mweb"]]:
                 retry = dict(opts)
-                retry["extractor_args"] = {"youtube": {"player_client": client}}
+                retry["extractor_args"] = _youtube_extractor_args(client)
                 try:
                     return _extract(retry, process=False)
                 except Exception:
@@ -775,11 +799,27 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     cookies_size = COOKIES_FILE.stat().st_size if cookies_ok else 0
     env_ok = bool(os.getenv("COOKIES_CONTENT"))
     ffmpeg_ok = bool(FFMPEG_DIR)
+    # Прокси құпиясөзін көрсетпейміз — тек саны мен хостын
+    def _proxy_host(p: str) -> str:
+        try:
+            return p.split("@")[-1]
+        except Exception:
+            return "?"
+    proxy_line = (
+        f"Proxy: ✅ {len(PROXY_LIST)} дана ({', '.join(_proxy_host(p) for p in PROXY_LIST)})"
+        if PROXY_LIST else "Proxy: ❌ жоқ (YouTube блок қаупі)"
+    )
+    pot_line = (
+        f"PO Token: ✅ {POT_PROVIDER_URL}" if POT_PROVIDER_URL
+        else "PO Token: ⚠️ env жоқ (127.0.0.1:4416 әдепкі)"
+    )
     await update.message.reply_text(
         f"🔧 Debug:\n"
         f"cookies.txt: {'✅ бар' if cookies_ok else '❌ жоқ'} ({cookies_size} байт)\n"
         f"COOKIES_CONTENT env: {'✅' if env_ok else '❌'}\n"
         f"FFmpeg: {'✅' if ffmpeg_ok else '❌'}\n"
+        f"{proxy_line}\n"
+        f"{pot_line}\n"
         f"Python path: {COOKIES_FILE.resolve()}"
     )
 
@@ -2787,48 +2827,71 @@ def _youtube_download_robust(url: str, uid: str, height: int | None) -> tuple[Pa
         ["android"], ["web"], ["tv"], ["android_vr", "tv_embedded"],
     ]
 
+    # Проксилер — Webshare тегін жоспары бірнеше IP береді. Бір IP блокталса,
+    # келесісіне ауысамыз. Соңында тікелей (None) де сынаймыз — po_token бар болса
+    # прокси-сіз де өтуі мүмкін.
+    proxies = (PROXY_LIST + [None]) if PROXY_LIST else [None]
+
     last_err = "белгісіз"
-    for client in clients:
-        for fmt in formats:
-            # Алдыңғы әрекеттің қалдығын тазалаймыз
-            for f in DOWNLOAD_DIR.glob(f"video_{uid}.*"):
-                f.unlink(missing_ok=True)
-            opts = _base_ydl_opts(url)
-            opts.update({
-                "outtmpl": out_template,
-                "format": fmt,
-                "merge_output_format": "mp4",
-                "extractor_args": {"youtube": {"player_client": client}},
-            })
-            try:
-                info = _ydl_download(opts, url)
-            except Exception as e:
-                last_err = str(e)[:150]
-                continue
-            found = (list(DOWNLOAD_DIR.glob(f"video_{uid}.mp4"))
-                     or list(DOWNLOAD_DIR.glob(f"video_{uid}.*")))
-            if not found:
-                continue
-            path = found[0]
-            # Файл дұрыс па? (бос емес әрі ұзақтығы бар)
-            try:
-                size = path.stat().st_size
-            except Exception:
-                continue
-            if size < 10240:  # 10 КБ-тан кіші — бұзық
-                continue
-            dur = _probe_duration(path)
-            expected = info.get("duration") or 0
-            # Ұзақтық 0 болса — бұзық; күтілгеннен әлдеқайда қысқа болса — толымсыз
-            if dur < 1:
-                continue
-            if expected and dur < expected * 0.5:
-                # Жарты видеодан да аз келді — басқа форматты сынаймыз
-                last_err = f"толымсыз ({dur:.0f}/{expected:.0f}s)"
-                continue
-            # ✅ Дұрыс файл!
-            logger.info(f"YouTube OK: client={client} fmt={fmt[:20]} dur={dur:.0f}s")
-            return path, (info.get("title") or "video")
+    for proxy in proxies:
+        proxy_blocked = False
+        for client in clients:
+            if proxy_blocked:
+                break  # бұл прокси YouTube-ке блокталған — келесі проксиге өтеміз
+            for fmt in formats:
+                # Алдыңғы әрекеттің қалдығын тазалаймыз
+                for f in DOWNLOAD_DIR.glob(f"video_{uid}.*"):
+                    f.unlink(missing_ok=True)
+                opts = _base_ydl_opts(url)
+                if proxy:
+                    opts["proxy"] = proxy
+                else:
+                    opts.pop("proxy", None)
+                opts.update({
+                    "outtmpl": out_template,
+                    "format": fmt,
+                    "merge_output_format": "mp4",
+                    "extractor_args": _youtube_extractor_args(client),
+                })
+                try:
+                    info = _ydl_download(opts, url)
+                except Exception as e:
+                    last_err = str(e)[:150]
+                    low = str(e).lower()
+                    # IP блогы белгілері — бұл проксимен ары қарай сынаудың мәні жоқ
+                    if any(k in low for k in (
+                        "sign in to confirm", "not a bot", "confirm you're",
+                        "http error 429", "too many requests",
+                        "http error 403", "forbidden", "blocked",
+                    )):
+                        proxy_blocked = True
+                        logger.warning(f"YouTube блок (прокси={proxy or 'тікелей'}) — келесі проксиге")
+                        break  # fmt циклін тоқтатамыз
+                    continue
+                found = (list(DOWNLOAD_DIR.glob(f"video_{uid}.mp4"))
+                         or list(DOWNLOAD_DIR.glob(f"video_{uid}.*")))
+                if not found:
+                    continue
+                path = found[0]
+                # Файл дұрыс па? (бос емес әрі ұзақтығы бар)
+                try:
+                    size = path.stat().st_size
+                except Exception:
+                    continue
+                if size < 10240:  # 10 КБ-тан кіші — бұзық
+                    continue
+                dur = _probe_duration(path)
+                expected = info.get("duration") or 0
+                # Ұзақтық 0 болса — бұзық; күтілгеннен әлдеқайда қысқа болса — толымсыз
+                if dur < 1:
+                    continue
+                if expected and dur < expected * 0.5:
+                    # Жарты видеодан да аз келді — басқа форматты сынаймыз
+                    last_err = f"толымсыз ({dur:.0f}/{expected:.0f}s)"
+                    continue
+                # ✅ Дұрыс файл!
+                logger.info(f"YouTube OK: прокси={proxy or 'тікелей'} client={client} fmt={fmt[:20]} dur={dur:.0f}s")
+                return path, (info.get("title") or "video")
 
     raise Exception(f"YouTube барлық әдіс сәтсіз. Соңғы қате: {last_err}")
 

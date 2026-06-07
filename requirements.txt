@@ -1,6 +1,8 @@
 python-dotenv
 python-telegram-bot
 yt-dlp
+bgutil-ytdlp-pot-provider
 hydrogram
+TgCrypto
 requests
 playwright
