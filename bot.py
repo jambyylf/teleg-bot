@@ -2808,8 +2808,13 @@ def _youtube_download_robust(url: str, uid: str, height: int | None) -> tuple[Pa
             "best",
         ]
     else:
+        # "Ең жоғары сапа". Абсолют ең жоғарыдан бастаймыз, бірақ ол сәтсіз болса
+        # (Deno жоқтықтан signature solving) — combined ~360p-ге құламай, алдымен
+        # 1080 → 720 video+audio форматтарын сынаймыз (олар әдетте signature-сіз жүктеледі).
         formats = [
             "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio",
+            "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio",
+            "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio",
             "best[ext=mp4]/best",
             "best",
             "worst",  # ең соңғы амал — бірдеңе беру
