@@ -2833,10 +2833,10 @@ def _youtube_download_robust(url: str, uid: str, height: int | None) -> tuple[Pa
             ["android"], ["web"], ["tv"], ["android_vr", "tv_embedded"],
         ]
 
-    # Проксилер — Webshare тегін жоспары бірнеше IP береді. Бір IP блокталса,
-    # келесісіне ауысамыз. Соңында тікелей (None) де сынаймыз — po_token бар болса
-    # прокси-сіз де өтуі мүмкін.
-    proxies = (PROXY_LIST + [None]) if PROXY_LIST else [None]
+    # Проксилер. АЛДЫМЕН тікелей (None) сынаймыз — po_token блокты айналып өтеді,
+    # әрі тікелей тегін әрі шексіз (Webshare тегін прокси 1GB/ай лимитті жеуден
+    # сақтаймыз). Тікелей блок болса ғана — прокси(лер)ге fallback жасаймыз.
+    proxies = ([None] + PROXY_LIST) if PROXY_LIST else [None]
 
     last_err = "белгісіз"
     for proxy in proxies:
