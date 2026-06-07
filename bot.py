@@ -739,8 +739,9 @@ class _YtdlpPotLogger:
 def get_video_info(url: str) -> dict:
     opts = _base_ydl_opts(url)
     opts["skip_download"] = True
-    # YouTube + PO Token бапталса — токен сұралғанын логта көру үшін verbose қосамыз
-    if _is_youtube(url) and POT_PROVIDER_URL:
+    # Диагностика: POT_DEBUG=1 болса ғана yt-dlp-тің po_token логын шығарамыз
+    # (әдетте өшулі — әйтпесе лог тым шулы болады)
+    if _is_youtube(url) and POT_PROVIDER_URL and os.getenv("POT_DEBUG"):
         opts["verbose"] = True
         opts["logger"] = _YtdlpPotLogger()
 
