@@ -52,6 +52,14 @@ PROXY_URL = PROXY_LIST[0] if PROXY_LIST else ""
 #   http://bgutil-provider.railway.internal:4416
 # Бос болса — bgutil плагині әдепкі 127.0.0.1:4416-дан іздейді (сол контейнерде істесе).
 POT_PROVIDER_URL = os.getenv("POT_PROVIDER_URL", "").strip()
+
+# Яндекс Музыка — ресми API (yandex-music кітапханасы) + OAuth токен.
+# yt-dlp web-парсингі datacenter IP-де блокталады, ал ресми API лицензияны
+# АККАУНТ аймағы бойынша береді (IP емес) — KZ аккаунт токенімен Railway-ден істейді.
+# Токенді алу: https://yandex-music.readthedocs.io/en/main/token.html
+YANDEX_TOKEN = os.getenv("YANDEX_TOKEN", "").strip()
+# Қажет болса (API IP-ден жетпесе) — ТМД проксиі тек Yandex үшін
+YANDEX_PROXY = os.getenv("YANDEX_PROXY", "").strip()
 DOWNLOAD_DIR = Path("downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
@@ -996,15 +1004,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     lang = _get_lang(update.effective_user.id)
 
-    # Яндекс Музыка — тек аудио (MP3). Бір ғана батырма: MP3 жүктеу.
+    # Яндекс Музыка — тек аудио (MP3), ресми API + токен арқылы. Бір батырма.
     if _is_yandex_music(url):
-        note = ("" if COOKIES_FILE.exists() else
-                "\n\n⚠️ Толық трек үшін Yandex Music cookies керек "
-                "(/setcookies). Cookies болмаса тек ~30 секунд жүктеледі.")
         kb = [[InlineKeyboardButton("🎵 MP3 жүктеу", callback_data="type:audio")]]
         await update.message.reply_text(
-            "🎵 Яндекс Музыка табылды." + note,
-            reply_markup=InlineKeyboardMarkup(kb),
+            "🎵 Яндекс Музыка табылды.", reply_markup=InlineKeyboardMarkup(kb),
         )
         return
 
@@ -1263,6 +1267,35 @@ async def download_and_send_audio(query, context, url: str) -> None:
         await query.edit_message_text("⏳ Алдыңғы жүктеу аяқталмады.")
         return
     ACTIVE_USERS.add(user_id)
+
+    # Яндекс Музыка — ресми API (yandex-music + токен) арқылы жүктейміз
+    if _is_yandex_music(url):
+        try:
+            loop = asyncio.get_event_loop()
+            await query.edit_message_text("⏳ Яндекс Музыка жүктелуде...")
+            uid = uuid.uuid4().hex[:8]
+            mp3_path, title = await loop.run_in_executor(
+                None, _yandex_music_download, url, uid)
+            size_mb = mp3_path.stat().st_size / (1024 * 1024)
+            await query.edit_message_text("📤 Жіберілуде...")
+            if size_mb > 50 and API_ID and API_HASH:
+                await _pyro_send_audio(query.message.chat_id, mp3_path, title, query.message)
+            else:
+                with open(mp3_path, "rb") as f:
+                    await context.bot.send_audio(
+                        chat_id=query.message.chat_id, audio=f,
+                        title=title[:64], filename=f"{_safe_name(title)}.mp3",
+                        read_timeout=600, write_timeout=600, connect_timeout=60,
+                    )
+            await query.edit_message_text("✅ Аудио жіберілді!")
+            mp3_path.unlink(missing_ok=True)
+        except Exception as e:
+            logger.error(f"Yandex Music error: {e}", exc_info=True)
+            await _notify_admin_error(context, query.from_user, url, e, "YandexMusic")
+            await query.edit_message_text(CLIENT_ERROR_MSG)
+        finally:
+            ACTIVE_USERS.discard(user_id)
+        return
 
     # Threads — видеоны жүктеп, аудио шығарамыз
     if _is_threads(url):
@@ -2803,6 +2836,46 @@ def _ydl_download(opts: dict, url: str) -> dict:
         return ydl.extract_info(url, download=True)
 
 
+def _yandex_music_download(url: str, uid: str) -> tuple[Path, str]:
+    """Yandex Music трегін РЕСМИ API (yandex-music + OAuth токен) арқылы жүктейді.
+    yt-dlp web-парсингінен айырмашылығы — datacenter anti-bot блогын айналып өтеді
+    (лицензия аккаунт аймағы бойынша). YANDEX_TOKEN міндетті."""
+    from yandex_music import Client
+
+    if not YANDEX_TOKEN:
+        raise Exception("YANDEX_TOKEN бапталмаған (Railway → Variables)")
+
+    m = re.search(r"/track/(\d+)", url)
+    if not m:
+        raise Exception("Yandex Music трек ID табылмады (тек жеке трек сілтемесі)")
+    track_num = m.group(1)
+    ma = re.search(r"/album/(\d+)", url)
+    full_id = f"{track_num}:{ma.group(1)}" if ma else track_num
+
+    client = Client(YANDEX_TOKEN)
+    # Қажет болса — Yandex сұраныстарын ТМД проксиі арқылы
+    if YANDEX_PROXY:
+        try:
+            client.request.session.proxies = {"http": YANDEX_PROXY, "https": YANDEX_PROXY}
+        except Exception:
+            pass
+    client.init()
+
+    tracks = client.tracks([full_id]) or client.tracks([track_num])
+    if not tracks:
+        raise Exception("Трек табылмады (ID қате не қолжетімсіз)")
+    track = tracks[0]
+
+    artists = ", ".join(track.artists_name()) if track.artists_name() else ""
+    title = f"{artists} - {track.title}" if artists else (track.title or "track")
+
+    out = DOWNLOAD_DIR / f"audio_{uid}.mp3"
+    track.download(str(out), codec="mp3", bitrate_in_kbps=320)
+    if not out.exists() or out.stat().st_size < 1024:
+        raise Exception("Yandex трек жүктелмеді (бос файл)")
+    return out, title
+
+
 def _probe_duration(path: Path) -> float:
     """Файлдың ұзақтығын секундпен қайтарады (тексеру үшін). 0 = оқылмады."""
     ffprobe = Path(FFMPEG_DIR) / f"ffprobe{_EXE}" if FFMPEG_DIR else "ffprobe"
@@ -3403,6 +3476,8 @@ def main() -> None:
     if not FFMPEG_DIR:
         logger.warning("FFmpeg табылмады! Аудио/видео merge жұмыс істемеуі мүмкін.")
     _check_pot_provider()
+    logger.info(f"Яндекс Музыка токені: {'✅ бар' if YANDEX_TOKEN else '❌ жоқ (YANDEX_TOKEN)'}"
+                + (f" | прокси: {YANDEX_PROXY.split('@')[-1]}" if YANDEX_PROXY else ""))
 
     app = (
         Application.builder()
