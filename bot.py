@@ -3344,6 +3344,13 @@ def _check_pot_provider() -> None:
     except Exception:
         pass
 
+    # Орнатылған bgutil плагин нұсқасы (жаңа framework үшін >= 1.1.0 керек)
+    try:
+        from importlib.metadata import version as _ver
+        logger.info(f"bgutil плагин нұсқасы (pip): {_ver('bgutil-ytdlp-pot-provider')}")
+    except Exception as e:
+        logger.warning(f"bgutil плагин нұсқасын оқу қатесі: {e}")
+
     # bgutil плагині yt-dlp-ке жүктелді ме? (жаңа және ескі модуль жолдары)
     plugin_loaded = False
     for mod in ("yt_dlp_plugins.extractor.youtube.pot.bgutil_http",
