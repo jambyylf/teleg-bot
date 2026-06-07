@@ -1182,6 +1182,7 @@ async def handle_type_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
         except Exception as e:
             logger.error(f"Info error: {e}", exc_info=True)
+            await _notify_admin_error(context, query.from_user, url, e, "")
             await query.edit_message_text(_format_error(str(e), url))
 
 
@@ -1262,7 +1263,7 @@ async def download_and_send_audio(query, context, url: str) -> None:
         except Exception as e:
             logger.error(f"Threads audio error: {e}", exc_info=True)
             await _notify_admin_error(context, query.from_user, url, e, "Threads")
-            await query.edit_message_text(f"❌ Threads аудио қатесі:\n{str(e)[:200]}")
+            await query.edit_message_text(CLIENT_ERROR_MSG)
         finally:
             ACTIVE_USERS.discard(user_id)
         return
@@ -1294,7 +1295,7 @@ async def download_and_send_audio(query, context, url: str) -> None:
         except Exception as e:
             logger.error(f"TikTok audio error: {e}", exc_info=True)
             await _notify_admin_error(context, query.from_user, url, e, "TikTok")
-            await query.edit_message_text(f"❌ TikTok аудио жүктелмеді:\n{str(e)[:300]}")
+            await query.edit_message_text(CLIENT_ERROR_MSG)
         finally:
             ACTIVE_USERS.discard(user_id)
         return
@@ -1416,7 +1417,7 @@ async def download_and_send_video(query, context, url: str, height: int | None) 
         except Exception as e:
             logger.error(f"Threads video error: {e}", exc_info=True)
             await _notify_admin_error(context, query.from_user, url, e, "Threads")
-            await query.edit_message_text(f"❌ Threads қатесі:\n{str(e)[:300]}")
+            await query.edit_message_text(CLIENT_ERROR_MSG)
         finally:
             ACTIVE_USERS.discard(user_id)
         return
@@ -1453,7 +1454,7 @@ async def download_and_send_video(query, context, url: str, height: int | None) 
         except Exception as e:
             logger.error(f"TikTok video error: {e}", exc_info=True)
             await _notify_admin_error(context, query.from_user, url, e, "TikTok")
-            await query.edit_message_text(f"❌ TikTok жүктелмеді:\n{str(e)[:300]}")
+            await query.edit_message_text(CLIENT_ERROR_MSG)
         finally:
             ACTIVE_USERS.discard(user_id)
         return
@@ -1756,7 +1757,7 @@ async def download_and_send_trimmed(update: Update, context: ContextTypes.DEFAUL
         await _notify_admin_error(context, update.effective_user, url, e, "Trim")
         for f in DOWNLOAD_DIR.glob(f"trim_{uid}.*"):
             f.unlink(missing_ok=True)
-        await msg.edit_text(f"❌ Кесу қатесі:\n{str(e)[:300]}")
+        await msg.edit_text(CLIENT_ERROR_MSG)
     finally:
         ACTIVE_USERS.discard(user_id)
 
@@ -1864,7 +1865,7 @@ async def download_and_send_instagram(query, context, url: str) -> None:
     except Exception as e:
         logger.error(f"Instagram error: {e}", exc_info=True)
         await _notify_admin_error(context, query.from_user, url, e, "Instagram")
-        await query.edit_message_text(f"❌ Instagram қатесі:\n{str(e)[:300]}")
+        await query.edit_message_text(CLIENT_ERROR_MSG)
     finally:
         for f in DOWNLOAD_DIR.glob(f"ig_{uid}_*"):
             f.unlink(missing_ok=True)
@@ -2355,8 +2356,9 @@ async def download_and_send_batch(query, context, urls: list, audio: bool = Fals
                 ok_count += 1
             except Exception as e2:
                 logger.error(f"Batch item {idx} error: {e2}", exc_info=True)
+                await _notify_admin_error(context, query.from_user, u, e2, "Batch item")
                 try:
-                    await status.edit_text(f"⚠️ {idx}/{len(urls)}: қате — {str(e2)[:80]}")
+                    await status.edit_text(f"⚠️ {idx}/{len(urls)}: жүктелмеді")
                 except Exception:
                     pass
                 for f in DOWNLOAD_DIR.glob(f"b*_{uid}.*"):
@@ -2367,7 +2369,7 @@ async def download_and_send_batch(query, context, urls: list, audio: bool = Fals
     except Exception as e:
         logger.error(f"Batch error: {e}", exc_info=True)
         await _notify_admin_error(context, query.from_user, ", ".join(urls[:3]), e, "Batch")
-        await query.edit_message_text(f"❌ Қате: {str(e)[:200]}")
+        await query.edit_message_text(CLIENT_ERROR_MSG)
     finally:
         ACTIVE_USERS.discard(user_id)
 
@@ -2430,7 +2432,8 @@ async def download_and_send_subtitles(query, context, url: str) -> None:
 
     except Exception as e:
         logger.error(f"Subtitle error: {e}", exc_info=True)
-        await query.edit_message_text(f"❌ Субтитр қатесі:\n{str(e)[:300]}")
+        await _notify_admin_error(context, query.from_user, url, e, "Subtitle")
+        await query.edit_message_text(CLIENT_ERROR_MSG)
     finally:
         for f in DOWNLOAD_DIR.glob(f"sub_{uid}*"):
             f.unlink(missing_ok=True)
@@ -2531,8 +2534,9 @@ async def download_and_send_playlist(query, context, url: str) -> None:
                 ok_count += 1
             except Exception as e2:
                 logger.error(f"Playlist item {idx} error: {e2}", exc_info=True)
+                await _notify_admin_error(context, query.from_user, vurl, e2, "Playlist item")
                 try:
-                    await status.edit_text(f"⚠️ {idx}/{len(limited)}: қате — {str(e2)[:80]}")
+                    await status.edit_text(f"⚠️ {idx}/{len(limited)}: жүктелмеді")
                 except Exception:
                     pass
                 for f in DOWNLOAD_DIR.glob(f"pl_{uid}.*"):
@@ -2544,7 +2548,8 @@ async def download_and_send_playlist(query, context, url: str) -> None:
 
     except Exception as e:
         logger.error(f"Playlist error: {e}", exc_info=True)
-        await query.edit_message_text(f"❌ Плейлист қатесі:\n{str(e)[:300]}")
+        await _notify_admin_error(context, query.from_user, url, e, "Playlist")
+        await query.edit_message_text(CLIENT_ERROR_MSG)
     finally:
         ACTIVE_USERS.discard(user_id)
 
@@ -2564,66 +2569,18 @@ COOKIES_INSTRUCTION = (
 )
 
 
+# Клиентке (пайдаланушыға) кез келген қатеде көрсетілетін БІРЫҢҒАЙ сыпайы мәтін.
+# Техникалық детальдар клиентке көрсетілмейді — олар тек админге барады.
+CLIENT_ERROR_MSG = (
+    "😔 Кешіріңіз, видео жүктелмеді.\n"
+    "Қысқа уақытта қатені тауып түзетеміз."
+)
+
+
 def _format_error(error: str, url: str = "") -> str:
-    """Қатені пайдаланушыға түсінікті хабарламаға айналдырады."""
-    err = error.lower()
-    url_lower = url.lower()
-
-    is_youtube = any(d in url_lower for d in ("youtube.com", "youtu.be"))
-    is_tiktok = "tiktok.com" in url_lower
-    is_vk = any(d in url_lower for d in ("vk.com", "vk.ru", "vkvideo.ru"))
-    is_threads = any(d in url_lower for d in ("threads.net", "threads.com"))
-    is_instagram = "instagram.com" in url_lower
-    no_cookies = not COOKIES_FILE.exists()
-
-    # YouTube датацентр IP блогы
-    if is_youtube and ("sign in" in err or "bot" in err or "confirm your age" in err
-                       or ("login" in err and "cookies" not in err)):
-        return "❌ YouTube серверден жүктеуді блоктады. Сілтемені қайта жіберіп көріңіз."
-
-    if is_threads and no_cookies:
-        return "🔐 Threads жүктеу үшін cookies керек.\n\n" + COOKIES_INSTRUCTION
-
-    # Instagram — cookie қажет
-    if is_instagram and (no_cookies or "login" in err or "invalid_post" in err):
-        if no_cookies:
-            return (
-                "🔐 Instagram жүктеу үшін аккаунтқа кіру керек.\n\n"
-                + COOKIES_INSTRUCTION
-            )
-        return "❌ Instagram бұл постты жүктеуге рұқсат бермеді."
-
-    if is_tiktok and ("blocked" in err or "ip address" in err):
-        if no_cookies:
-            return (
-                "🔐 TikTok IP блоктады — cookie керек.\n\n"
-                + COOKIES_INSTRUCTION
-            )
-        return "❌ TikTok бұл контентті жүктеуге рұқсат бермеді."
-    if is_vk and no_cookies and ("login" in err or "auth" in err or "private" in err):
-        return (
-            "🔐 Бұл VK видеосы кіруді қажет етеді.\n\n"
-            + COOKIES_INSTRUCTION
-        )
-    if "registered users" in err or "authentication" in err or ("login" in err and not is_youtube) or "cookies" in err:
-        return (
-            "🔐 Бұл контент кіруді қажет етеді.\n\n"
-            + COOKIES_INSTRUCTION
-        )
-    if "invalid_post" in err:
-        return (
-            "🔐 Бұл контент кіруді қажет етеді.\n\n"
-            + COOKIES_INSTRUCTION
-        )
-    if "unsupported url" in err:
-        return "❌ Бұл сайт қолдамайды немесе сілтеме дұрыс емес."
-    if "copyright" in err or "removed at the request" in err:
-        return "⛔ Бұл видео авторлық құқық иесінің сұрауы бойынша жойылған. Жүктеу мүмкін емес."
-    if "private" in err or "only available" in err:
-        return "🔒 Бұл жабық (private) контент. Жүктеу мүмкін емес."
-    if "not available" in err or "no video formats" in err:
-        return f"❌ Debug:\n{error[:500]}"
-    return f"❌ Қате болды:\n{error[:300]}"
+    """Клиентке көрсетілетін мәтін. Кез келген қатеде бірыңғай сыпайы хабар
+    қайтарады — техникалық қате тек админге (_notify_admin_error) барады."""
+    return CLIENT_ERROR_MSG
 
 
 async def _pyro_send_video(chat_id: int, path: Path, title: str, progress_msg,
