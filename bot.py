@@ -713,9 +713,36 @@ def _ydl_download_with_retry(opts: dict, url: str) -> dict:
 # Видео форматтарын анықтайды
 # ---------------------------------------------------------------------------
 
+class _YtdlpPotLogger:
+    """yt-dlp ішкі логынан тек po_token/bgutil жолдарын біздің логқа шығарады.
+    Сонда токен шынымен сұралды ма, провайдер жауап берді ме — көрінеді."""
+    _KEYS = ("[pot]", "po token", "po_token", "bgutil", "getpot",
+             "proof of origin", "pot provider")
+
+    def debug(self, msg):
+        m = str(msg).lower()
+        if any(k in m for k in self._KEYS):
+            logger.info(f"[ytdlp-pot] {msg}")
+
+    def info(self, msg):
+        pass
+
+    def warning(self, msg):
+        logger.warning(f"[ytdlp] {msg}")
+
+    def error(self, msg):
+        m = str(msg).lower()
+        if any(k in m for k in self._KEYS):
+            logger.warning(f"[ytdlp-pot] {msg}")
+
+
 def get_video_info(url: str) -> dict:
     opts = _base_ydl_opts(url)
     opts["skip_download"] = True
+    # YouTube + PO Token бапталса — токен сұралғанын логта көру үшін verbose қосамыз
+    if _is_youtube(url) and POT_PROVIDER_URL:
+        opts["verbose"] = True
+        opts["logger"] = _YtdlpPotLogger()
 
     def _extract(o: dict, process: bool = False) -> dict:
         with yt_dlp.YoutubeDL(o) as ydl:
@@ -729,9 +756,12 @@ def get_video_info(url: str) -> dict:
     try:
         return _extract(opts, process=False)
     except Exception:
-        # YouTube — барлық client-тарды сынайды
+        # YouTube — барлық client-тарды сынайды (po_token бар болса web алға)
         if _is_youtube(url):
-            for client in [["tv_embedded"], ["android_vr"], ["ios"], ["android"], ["mweb"]]:
+            yt_clients = ([["web"], ["mweb"], ["tv"], ["web_embedded"], ["tv_embedded"],
+                          ["android_vr"], ["ios"]] if POT_PROVIDER_URL else
+                         [["tv_embedded"], ["android_vr"], ["ios"], ["android"], ["mweb"]])
+            for client in yt_clients:
                 retry = dict(opts)
                 retry["extractor_args"] = _youtube_extractor_args(client)
                 try:
