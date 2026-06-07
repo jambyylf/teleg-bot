@@ -60,6 +60,9 @@ POT_PROVIDER_URL = os.getenv("POT_PROVIDER_URL", "").strip()
 YANDEX_TOKEN = os.getenv("YANDEX_TOKEN", "").strip()
 # Қажет болса (API IP-ден жетпесе) — ТМД проксиі тек Yandex үшін
 YANDEX_PROXY = os.getenv("YANDEX_PROXY", "").strip()
+# Яндекс Музыка жүктеуді қосу/өшіру ауыстырғышы.
+# Қазір ӨШУЛІ — иесі сұрағанда ғана True жасаймыз (немесе YANDEX_ENABLED env).
+YANDEX_MUSIC_ENABLED = os.getenv("YANDEX_ENABLED", "").strip() == "1"
 DOWNLOAD_DIR = Path("downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
@@ -1006,6 +1009,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Яндекс Музыка — тек аудио (MP3), ресми API + токен арқылы. Бір батырма.
     if _is_yandex_music(url):
+        if not YANDEX_MUSIC_ENABLED:
+            await update.message.reply_text(
+                "🎵 Яндекс Музыка жүктеу уақытша қолжетімсіз.")
+            return
         kb = [[InlineKeyboardButton("🎵 MP3 жүктеу", callback_data="type:audio")]]
         await update.message.reply_text(
             "🎵 Яндекс Музыка табылды.", reply_markup=InlineKeyboardMarkup(kb),
@@ -1270,6 +1277,10 @@ async def download_and_send_audio(query, context, url: str) -> None:
 
     # Яндекс Музыка — ресми API (yandex-music + токен) арқылы жүктейміз
     if _is_yandex_music(url):
+        if not YANDEX_MUSIC_ENABLED:
+            await query.edit_message_text("🎵 Яндекс Музыка жүктеу уақытша қолжетімсіз.")
+            ACTIVE_USERS.discard(user_id)
+            return
         try:
             loop = asyncio.get_event_loop()
             await query.edit_message_text("⏳ Яндекс Музыка жүктелуде...")
