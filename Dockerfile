@@ -1,5 +1,9 @@
 FROM python:3.11-slim
 
+# Deno — yt-dlp signature/n-challenge шешуші (толық YouTube сапасы: 1440p/4K).
+# Ресми deno образынан тек бинарьді көшіреміз (PATH-та /usr/local/bin).
+COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
+
 # FFmpeg + Playwright Chromium үшін жүйелік кітапханалар
 RUN apt-get update && apt-get install -y \
     ffmpeg \
