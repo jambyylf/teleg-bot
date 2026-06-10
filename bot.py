@@ -466,6 +466,30 @@ def _tiktok_download_playwright(url: str, out_dir: Path) -> tuple[Path, str]:
     return out_path, title[:80]
 
 
+def _resolve_tiktok_short(url: str) -> str:
+    """vt./vm.tiktok.com қысқа (share) сілтемесін толық URL-ге айналдырады.
+    tikwm қысқа сілтемені парси алмайды ("Url parsing is failed"), сондықтан
+    redirect-ті ұстап, толық /video/ URL-ін береміз."""
+    low = url.lower()
+    if "vt.tiktok.com" not in low and "vm.tiktok.com" not in low:
+        return url
+    try:
+        import requests
+        r = requests.get(
+            url, allow_redirects=True, timeout=30, stream=True,
+            headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                                   "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+                                   "Mobile/15E148 Safari/604.1"},
+        )
+        final = r.url
+        r.close()
+        if final and "tiktok.com" in final and "/video/" in final:
+            return final.split("?")[0]  # query параметрлерін алып тастаймыз
+        return final or url
+    except Exception:
+        return url
+
+
 def _tiktok_download_api(url: str, out_dir: Path, hd: bool = True) -> tuple[Path, str]:
     """TikTok-ты tikwm.com тегін API арқылы жүктейді (су таңбасыз, кілтсіз).
     Датацентр IP-де де (Railway) жұмыс істейді — видеоны tikwm сервері алып береді."""
@@ -509,6 +533,7 @@ def _tiktok_download_api(url: str, out_dir: Path, hd: bool = True) -> tuple[Path
 
 def _tiktok_download(url: str, out_dir: Path, hd: bool = True) -> tuple[Path, str]:
     """TikTok жүктеу әдістерін кезекпен сынайды: tikwm API → Playwright браузер."""
+    url = _resolve_tiktok_short(url)  # қысқа сілтемені толық URL-ге айналдырамыз
     errors = []
     for name, fn in (("tikwm", lambda u, d: _tiktok_download_api(u, d, hd)),
                      ("playwright", _tiktok_download_playwright)):
@@ -2012,6 +2037,7 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 def _tiktok_api_info(url: str) -> tuple:
     """tikwm арқылы TikTok тікелей mp4 URL-ін алады (жүктемей). (video_url, title, cover)."""
     import requests
+    url = _resolve_tiktok_short(url)  # қысқа сілтемені толық URL-ге
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
