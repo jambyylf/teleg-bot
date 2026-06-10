@@ -579,6 +579,16 @@ def _is_yandex_music(url: str) -> bool:
     return any(d in url.lower() for d in YANDEX_MUSIC_DOMAINS)
 
 
+def _is_dead_proxy_error(err: str) -> bool:
+    """Прокси «өлі» ме? (трафик бітті / қосыла алмады). Ондай қатені елемейміз —
+    тікелей жүктеудің нәтижесі/қатесі маңыздырақ."""
+    e = err.lower()
+    return any(k in e for k in (
+        "payment required", "402", "unable to connect to proxy",
+        "tunnel connection failed", "proxyerror", "cannot connect to proxy",
+    ))
+
+
 def _needs_auth(url: str) -> bool:
     return any(d in url.lower() for d in AUTH_DOMAINS)
 
@@ -813,7 +823,10 @@ def get_video_info(url: str) -> dict:
             try:
                 return _extract(o, process=False)
             except Exception as e:
-                last_err = e
+                # Өлі прокси (402/қосыла алмады) қатесін елемейміз — тікелей
+                # қатені сақтаймыз (ол маңыздырақ әрі түсінікті)
+                if not (proxy and _is_dead_proxy_error(str(e))):
+                    last_err = e
                 continue
         raise last_err or Exception("YouTube ақпарат алынбады")
 
@@ -2999,8 +3012,14 @@ def _youtube_download_robust(url: str, uid: str, height: int | None) -> tuple[Pa
                 try:
                     info = _ydl_download(opts, url)
                 except Exception as e:
-                    last_err = str(e)[:150]
                     low = str(e).lower()
+                    # Өлі прокси (402/қосыла алмады) — бұл проксиді тастап,
+                    # келесісіне өтеміз; қатені де сақтамаймыз (тікелейдікі маңызды)
+                    if proxy and _is_dead_proxy_error(low):
+                        proxy_blocked = True
+                        logger.warning(f"Прокси өлі (402/қосылым) — өткіземіз: {proxy}")
+                        break
+                    last_err = str(e)[:150]
                     # IP блогы белгілері — бұл проксимен ары қарай сынаудың мәні жоқ
                     if any(k in low for k in (
                         "sign in to confirm", "not a bot", "confirm you're",
