@@ -661,8 +661,11 @@ def _base_ydl_opts(url: str = "") -> dict:
             )
         }
 
-    # Cookies бар болса — барлық сайтқа қолданамыз
-    if COOKIES_FILE.exists():
+    # Cookies бар болса — қолданамыз. БІРАҚ YouTube + po_token жағдайында ЕМЕС:
+    # cookies.txt-тегі анонимді/ескірген YouTube cookies yt-dlp-ке "жарамсыз
+    # сессия" болып көрініп, "Sign in to confirm you're not a bot" тексеруін
+    # ТУДЫРУЫ мүмкін. po_token аутентификацияны өзі жасайды — cookies-сіз тазарақ.
+    if COOKIES_FILE.exists() and not (_is_youtube(url) and POT_PROVIDER_URL):
         opts["cookiefile"] = str(COOKIES_FILE)
 
     # ЕСКЕРТУ: проксиді мұнда ӘДЕЙІ ҚОСПАЙМЫЗ. po_token блокты IP-ге тәуелсіз
@@ -811,23 +814,28 @@ def get_video_info(url: str) -> dict:
 
     # YouTube — алдымен ТІКЕЛЕЙ (po_token блокты шешеді), сосын прокси fallback.
     # opts-та клиент тізімі (web-first) + po_token бар; тек проксиді ауыстырамыз.
+    # Бот тексеруі жиі УАҚЫТША (rate-limit) — сәл күтіп 2 рет сынаймыз.
     if _is_youtube(url):
+        import time as _time
         yt_proxies = ([None] + PROXY_LIST) if PROXY_LIST else [None]
         last_err: Exception | None = None
-        for proxy in yt_proxies:
-            o = dict(opts)
-            if proxy:
-                o["proxy"] = proxy
-            else:
-                o.pop("proxy", None)
-            try:
-                return _extract(o, process=False)
-            except Exception as e:
-                # Өлі прокси (402/қосыла алмады) қатесін елемейміз — тікелей
-                # қатені сақтаймыз (ол маңыздырақ әрі түсінікті)
-                if not (proxy and _is_dead_proxy_error(str(e))):
-                    last_err = e
-                continue
+        for round_i in range(2):
+            for proxy in yt_proxies:
+                o = dict(opts)
+                if proxy:
+                    o["proxy"] = proxy
+                else:
+                    o.pop("proxy", None)
+                try:
+                    return _extract(o, process=False)
+                except Exception as e:
+                    # Өлі прокси (402/қосыла алмады) қатесін елемейміз — тікелей
+                    # қатені сақтаймыз (ол маңыздырақ әрі түсінікті)
+                    if not (proxy and _is_dead_proxy_error(str(e))):
+                        last_err = e
+                    continue
+            if round_i == 0:
+                _time.sleep(3)  # уақытша блок болса — сәл күтіп қайталаймыз
         raise last_err or Exception("YouTube ақпарат алынбады")
 
     try:
