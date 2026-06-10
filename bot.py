@@ -836,6 +836,18 @@ def get_video_info(url: str) -> dict:
                     continue
             if round_i == 0:
                 _time.sleep(3)  # уақытша блок болса — сәл күтіп қайталаймыз
+        # DRM fallback: web/tv клиенттер DRM (SABR) форматын берсе, ескі клиенттер
+        # (android/ios/tv_embedded) көбіне DRM-сіз қарапайым формат береді.
+        if last_err and "drm" in str(last_err).lower():
+            for client in (["android"], ["ios"], ["tv_embedded"], ["android_vr"]):
+                o = dict(opts)
+                o.pop("proxy", None)
+                o["extractor_args"] = _youtube_extractor_args(client)
+                try:
+                    return _extract(o, process=False)
+                except Exception as e:
+                    last_err = e
+                    continue
         raise last_err or Exception("YouTube ақпарат алынбады")
 
     try:
