@@ -579,6 +579,20 @@ def _is_yandex_music(url: str) -> bool:
     return any(d in url.lower() for d in YANDEX_MUSIC_DOMAINS)
 
 
+def _has_youtube_login_cookies() -> bool:
+    """cookies.txt-те YouTube ЛОГИН cookies бар ма? (анонимді емес).
+    Логин cookies "Sign in to confirm" блогын/rate-limit-ті азайтады; ал анонимді
+    cookies керісінше зиян (жарамсыз сессия болып көрінеді)."""
+    if not COOKIES_FILE.exists():
+        return False
+    try:
+        txt = COOKIES_FILE.read_text(encoding="utf-8", errors="ignore")
+        return any(k in txt for k in (
+            "__Secure-3PSID", "__Secure-1PSID", "LOGIN_INFO", "SAPISID"))
+    except Exception:
+        return False
+
+
 def _is_dead_proxy_error(err: str) -> bool:
     """Прокси «өлі» ме? (трафик бітті / қосыла алмады). Ондай қатені елемейміз —
     тікелей жүктеудің нәтижесі/қатесі маңыздырақ."""
@@ -661,11 +675,16 @@ def _base_ydl_opts(url: str = "") -> dict:
             )
         }
 
-    # Cookies бар болса — қолданамыз. БІРАҚ YouTube + po_token жағдайында ЕМЕС:
-    # cookies.txt-тегі анонимді/ескірген YouTube cookies yt-dlp-ке "жарамсыз
-    # сессия" болып көрініп, "Sign in to confirm you're not a bot" тексеруін
-    # ТУДЫРУЫ мүмкін. po_token аутентификацияны өзі жасайды — cookies-сіз тазарақ.
-    if COOKIES_FILE.exists() and not (_is_youtube(url) and POT_PROVIDER_URL):
+    # Cookies логикасы:
+    # • YouTube — тек ЛОГИН cookies пайдаланамыз (rate-limit/"Sign in" азайтады).
+    #   Анонимді cookies зиян (жарамсыз сессия болып көрінеді) — оларды қоспаймыз,
+    #   ондай жағдайда po_token жалғыз істейді.
+    # • Басқа сайттар — cookies бар болса қолдана береміз.
+    if _is_youtube(url):
+        use_cookies = _has_youtube_login_cookies()
+    else:
+        use_cookies = COOKIES_FILE.exists()
+    if use_cookies:
         opts["cookiefile"] = str(COOKIES_FILE)
 
     # ЕСКЕРТУ: проксиді мұнда ӘДЕЙІ ҚОСПАЙМЫЗ. po_token блокты IP-ге тәуелсіз
