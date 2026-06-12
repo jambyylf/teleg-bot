@@ -3568,6 +3568,9 @@ def main() -> None:
     _check_pot_provider()
     logger.info(f"Яндекс Музыка токені: {'✅ бар' if YANDEX_TOKEN else '❌ жоқ (YANDEX_TOKEN)'}"
                 + (f" | прокси: {YANDEX_PROXY.split('@')[-1]}" if YANDEX_PROXY else ""))
+    logger.info("YouTube логин cookies: "
+                + ("✅ бар (rate-limit азаяды)" if _has_youtube_login_cookies()
+                   else "❌ жоқ (тек анонимді/жоқ — po_token жалғыз істейді)"))
 
     app = (
         Application.builder()
