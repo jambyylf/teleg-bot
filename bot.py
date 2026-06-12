@@ -2967,41 +2967,31 @@ def _youtube_download_robust(url: str, uid: str, height: int | None) -> tuple[Pa
     кезекпен сынайды. Әр нәтиже файлдың НАҚТЫ дұрыстығын тексереді
     (ұзақтық > 0 әрі дыбыс бар). Бұл 'format not available' мен '1-секундтық
     бұзық файл' мәселелерін толық шешеді."""
+    import time as _time
     out_template = str(DOWNLOAD_DIR / f"video_{uid}.%(ext)s")
 
-    # Формат жолдары — ең сапалыдан қарапайымға дейін
+    # Формат жолдары. Әрбірінде ішкі /-fallback бар, сондықтан аз жол жеткілікті —
+    # көп комбинация YouTube IP-ін rate-limit жасайды ("Sign in to confirm").
+    # Deno орнатылғандықтан bestvideo+bestaudio толық сапамен бірден жүктеледі.
     if height:
         formats = [
-            f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={height}]+bestaudio",
-            f"best[height<={height}][ext=mp4]/best[height<={height}]",
-            f"best[height<={height}]",
-            "best",
+            f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={height}]+bestaudio/best[height<={height}]/best",
+            f"best[height<={height}]/best",
         ]
     else:
-        # "Ең жоғары сапа". Абсолют ең жоғарыдан бастаймыз, бірақ ол сәтсіз болса
-        # (Deno жоқтықтан signature solving) — combined ~360p-ге құламай, алдымен
-        # 1080 → 720 video+audio форматтарын сынаймыз (олар әдетте signature-сіз жүктеледі).
         formats = [
-            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio",
-            "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio",
-            "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio",
+            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
             "best[ext=mp4]/best",
             "best",
-            "worst",  # ең соңғы амал — бірдеңе беру
         ]
 
-    # Клиенттер. PO Token провайдері бар болса — web-негізді клиенттер алға
-    # (тек солар GVS po_token-ды пайдаланып бот тексеруін айналып өтеді).
+    # Клиенттер. po_token бар болса web/mweb алға (GVS токенмен блокты өтеді),
+    # сосын ескі клиенттер (tv_embedded/android/ios) — олар DRM-сіз әрі бот тексеруін
+    # басқа жолмен өтуі мүмкін. Тізім қысқа — артық сұраныс rate-limit тудырмауы үшін.
     if POT_PROVIDER_URL:
-        clients = [
-            ["web"], ["mweb"], ["tv"], ["web_embedded"],
-            ["tv_embedded"], ["android_vr"], ["ios"], ["android"],
-        ]
+        clients = [["web"], ["mweb"], ["tv_embedded"], ["android"], ["ios"]]
     else:
-        clients = [
-            ["tv_embedded"], ["android_vr"], ["ios"], ["mweb"],
-            ["android"], ["web"], ["tv"], ["android_vr", "tv_embedded"],
-        ]
+        clients = [["tv_embedded"], ["android_vr"], ["ios"], ["mweb"], ["android"]]
 
     # Проксилер. АЛДЫМЕН тікелей (None) сынаймыз — po_token блокты айналып өтеді,
     # әрі тікелей тегін әрі шексіз (Webshare тегін прокси 1GB/ай лимитті жеуден
@@ -3040,15 +3030,20 @@ def _youtube_download_robust(url: str, uid: str, height: int | None) -> tuple[Pa
                         logger.warning(f"Прокси өлі (402/қосылым) — өткіземіз: {proxy}")
                         break
                     last_err = str(e)[:150]
-                    # IP блогы белгілері — бұл проксимен ары қарай сынаудың мәні жоқ
-                    if any(k in low for k in (
+                    is_bot = any(k in low for k in (
                         "sign in to confirm", "not a bot", "confirm you're",
                         "http error 429", "too many requests",
                         "http error 403", "forbidden", "blocked",
-                    )):
+                    ))
+                    if is_bot and proxy:
+                        # Бұл прокси блокталған — келесі проксиге өтеміз
                         proxy_blocked = True
-                        logger.warning(f"YouTube блок (прокси={proxy or 'тікелей'}) — келесі проксиге")
-                        break  # fmt циклін тоқтатамыз
+                        logger.warning(f"YouTube блок (прокси={proxy}) — келесі проксиге")
+                        break
+                    if is_bot:
+                        # Тікелей rate-limit/блок — бас тартпаймыз: сәл кідіріп,
+                        # БАСҚА клиентті сынаймыз (android/ios басқа жолмен өтуі мүмкін)
+                        _time.sleep(2)
                     continue
                 found = (list(DOWNLOAD_DIR.glob(f"video_{uid}.mp4"))
                          or list(DOWNLOAD_DIR.glob(f"video_{uid}.*")))
